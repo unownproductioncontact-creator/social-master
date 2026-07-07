@@ -1,5 +1,6 @@
 import "server-only";
 import { PgBoss, fromPrisma, type Db, type PrismaTransactionLike } from "pg-boss";
+import { pgSslConfig } from "@/lib/db-ssl";
 
 export const PUBLISH_QUEUE = "publish";
 export const RECONCILE_QUEUE = "reconcile";
@@ -16,6 +17,7 @@ export function getBoss(): PgBoss {
     globalThis.pgBossGlobal = new PgBoss({
       connectionString: process.env.DATABASE_URL,
       schema: "pgboss",
+      ssl: pgSslConfig(),
     });
     globalThis.pgBossGlobal.on("error", (err) => console.error("[pg-boss]", err));
   }
