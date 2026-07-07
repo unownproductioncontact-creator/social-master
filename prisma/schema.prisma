@@ -1,0 +1,231 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+}
+
+enum SocialAccountType {
+  BUSINESS
+  CREATOR
+  PERSONAL
+}
+
+enum SocialAccountStatus {
+  ACTIVE
+  NEEDS_REAUTH
+  REVOKED
+}
+
+enum MediaStatus {
+  UPLOADING
+  READY
+  FAILED
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PARTIALLY_PUBLISHED
+  PUBLISHED
+  FAILED
+}
+
+enum PostContentType {
+  REEL
+  IMAGE
+  CAROUSEL
+  STORY
+  TIKTOK_VIDEO
+  TIKTOK_PHOTO
+}
+
+enum PublishMode {
+  AUTO
+  TIKTOK_DRAFT
+}
+
+enum PostTargetStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  SENT_TO_INBOX
+  FAILED
+}
+
+enum PublishJobState {
+  WAITING
+  ACTIVE
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  timezone     String   @default("Europe/Paris")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  socialAccounts SocialAccount[]
+  mediaAssets    MediaAsset[]
+  posts          Post[]
+  activityLogs   ActivityLog[]
+
+  @@map("users")
+}
+
+model SocialAccount {
+  id                String              @id @default(cuid())
+  userId            String
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform          Platform
+  platformAccountId String
+  username          String
+  displayName       String?
+  avatarUrl         String?
+  accountType       SocialAccountType?
+  accessTokenEnc    String
+  refreshTokenEnc   String?
+  tokenExpiresAt    DateTime?
+  refreshExpiresAt  DateTime?
+  grantedScopes     String[]            @default([])
+  status            SocialAccountStatus @default(ACTIVE)
+  lastCheckedAt     DateTime?
+  metadata          Json                @default("{}")
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  postTargets PostTarget[]
+
+  @@unique([platform, platformAccountId])
+  @@index([userId])
+  @@map("social_accounts")
+}
+
+model MediaAsset {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storageKey   String
+  mimeType     String
+  sizeBytes    Int
+  width        Int?
+  height       Int?
+  durationSec  Float?
+  thumbnailKey String?
+  status       MediaStatus @default(UPLOADING)
+  checksum     String?
+  createdAt    DateTime    @default(now())
+
+  postMedia PostMedia[]
+
+  @@index([userId])
+  @@map("media_assets")
+}
+
+model Post {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String?
+  caption     String     @default("")
+  hashtags    String[]   @default([])
+  status      PostStatus @default(DRAFT)
+  scheduledAt DateTime?
+  scheduledTz String     @default("Europe/Paris")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  postMedia   PostMedia[]
+  postTargets PostTarget[]
+
+  @@index([userId])
+  @@index([status, scheduledAt])
+  @@map("posts")
+}
+
+model PostMedia {
+  id           String     @id @default(cuid())
+  postId       String
+  post         Post       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  mediaAssetId String
+  mediaAsset   MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  position     Int        @default(0)
+
+  @@unique([postId, mediaAssetId])
+  @@index([postId])
+  @@map("post_media")
+}
+
+model PostTarget {
+  id              String           @id @default(cuid())
+  postId          String
+  post            Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccountId String
+  socialAccount   SocialAccount    @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  platform        Platform
+  contentType     PostContentType
+  publishMode     PublishMode      @default(AUTO)
+  captionOverride String?
+  platformOptions Json             @default("{}")
+  status          PostTargetStatus @default(PENDING)
+  platformPostId  String?
+  platformPostUrl String?
+  publishedAt     DateTime?
+  errorCode       String?
+  errorMessage    String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  publishJobs PublishJob[]
+
+  @@index([postId])
+  @@index([socialAccountId])
+  @@index([status])
+  @@map("post_targets")
+}
+
+model PublishJob {
+  id             String          @id @default(cuid())
+  postTargetId   String
+  postTarget     PostTarget      @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+  runAt          DateTime
+  attempt        Int             @default(0)
+  maxAttempts    Int             @default(3)
+  state          PublishJobState @default(WAITING)
+  idempotencyKey String          @unique
+  lockedAt       DateTime?
+  lastError      String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([postTargetId])
+  @@index([state, runAt])
+  @@map("publish_jobs")
+}
+
+model ActivityLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType String
+  entityId   String
+  action     String
+  detail     Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@map("activity_logs")
+}
