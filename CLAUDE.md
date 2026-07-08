@@ -226,6 +226,14 @@ Ajouté après la livraison initiale du MVP, à la demande du user :
 - **Piège d'automatisation découvert** : voir la note Checkbox Base UI plus haut dans ce fichier (§12).
 - **Incident d'infra observé, sans rapport avec le code** : le serveur `prisma dev` local a occasionnellement renvoyé `P1017 ConnectionClosed` sous charge concurrente (web + worker + scripts de test simultanés) — auto-résolu au rechargement. Probablement une limite du moteur Postgres-compatible allégé utilisé par `prisma dev`, pas un souci en production (Supabase = vrai Postgres). À garder en tête si ça se reproduit en dev.
 
+## 15bis. Alerte stockage R2 (08/07/2026)
+
+Question légitime du user en cours de déploiement : *l'auto-publication justifie-t-elle vraiment un stockage propre, sachant que Meta/TikTok ont déjà leurs planificateurs natifs ?* Réponse actée : **oui pour l'architecture choisie** — Instagram exige une URL publique (pas d'upload binaire direct sur la variante Instagram Login retenue) et la programmation "à l'avance" implique de conserver le fichier entre l'upload et l'heure de publication, quelle que soit la plateforme. L'alternative (juste un compositeur de texte, publication manuelle via les outils natifs) reste possible mais rendrait inutile tout le pipeline OAuth/worker déjà construit et testé — non retenue.
+
+Corollaire découvert à cette occasion : **aucun média n'est supprimé automatiquement après publication** (`deleteMediaAsset` existe mais n'est appelé que manuellement depuis la médiathèque) — le stockage ne peut donc que croître. Palier gratuit R2 = 10 Go **de stockage cumulé à l'instant T** (pas un quota mensuel — R2 n'a aucuns frais de sortie/bande passante). Pour l'usage du user (perso, < 15 posts/jour, vidéos ~10-50 Mo), 10 Go tiennent largement plus d'un an sans ménage ; le dépassement éventuel coûte ~0,015 $/Go/mois (non bloquant).
+
+**Filet de sécurité ajouté** : [src/worker/storage-check-job.ts](src/worker/storage-check-job.ts), job pg-boss quotidien (même pattern que le refresh de tokens, `0 5 * * *` UTC) — somme `MediaAsset.status=READY` déjà connue en base (pas d'appel R2/ListObjects), alerte Telegram au-delà de 80 % du palier. Logique d'alerte pure testée isolément + test d'intégration contre la vraie requête Prisma `aggregate`.
+
 ## 16. Suite de tests automatisés (Vitest)
 
 `npm test` (une fois) / `npm run test:watch` (mode watch). **46 tests, 5 fichiers, tous verts** sur un `prisma dev` fraîchement redémarré.
