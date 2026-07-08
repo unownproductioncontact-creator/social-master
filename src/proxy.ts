@@ -23,5 +23,7 @@ export default async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp)$).*)"],
+  // `txt`/`ico` exclus pour que les fichiers statiques de public/ (ex. la vérification
+  // de domaine TikTok `tiktok*.txt`) soient servis sans passer par la redirection d'auth.
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp|txt|ico)$).*)"],
 };
