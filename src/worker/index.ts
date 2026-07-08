@@ -1,8 +1,9 @@
 import "server-only";
-import { getBoss, PUBLISH_QUEUE, RECONCILE_QUEUE, TOKEN_REFRESH_QUEUE } from "@/worker/boss";
+import { getBoss, PUBLISH_QUEUE, RECONCILE_QUEUE, TOKEN_REFRESH_QUEUE, STORAGE_CHECK_QUEUE } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
 import { runTokenRefresh } from "@/worker/token-refresh-job";
+import { runStorageCheck } from "@/worker/storage-check-job";
 
 let started = false;
 
@@ -26,6 +27,9 @@ export async function startWorker(): Promise<void> {
   await boss.createQueue(TOKEN_REFRESH_QUEUE, { retryLimit: 1 });
   await boss.schedule(TOKEN_REFRESH_QUEUE, "0 4 * * *", {}, { tz: "UTC" }); // tous les jours à 4h UTC
 
+  await boss.createQueue(STORAGE_CHECK_QUEUE, { retryLimit: 1 });
+  await boss.schedule(STORAGE_CHECK_QUEUE, "0 5 * * *", {}, { tz: "UTC" }); // tous les jours à 5h UTC
+
   await boss.work(
     PUBLISH_QUEUE,
     { batchSize: 1, includeMetadata: true, perJobResults: true },
@@ -40,5 +44,9 @@ export async function startWorker(): Promise<void> {
     await runTokenRefresh();
   });
 
-  console.log("[worker] pg-boss démarré (queues: publish, reconcile, token-refresh)");
+  await boss.work(STORAGE_CHECK_QUEUE, async () => {
+    await runStorageCheck();
+  });
+
+  console.log("[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check)");
 }

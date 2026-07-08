@@ -5,6 +5,7 @@ import { pgConnectionConfig } from "@/lib/db-ssl";
 export const PUBLISH_QUEUE = "publish";
 export const RECONCILE_QUEUE = "reconcile";
 export const TOKEN_REFRESH_QUEUE = "token-refresh";
+export const STORAGE_CHECK_QUEUE = "storage-check";
 
 // Une seule instance dans tout le process (web + worker in-process, voir instrumentation.ts).
 declare global {
