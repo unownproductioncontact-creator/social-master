@@ -10,9 +10,13 @@ const STATUS_FETCH_URL = "https://open.tiktokapis.com/v2/post/publish/status/fet
 const CONTENT_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/content/init/";
 
 // Scopes vérifiés le 07/07/2026 sur developers.tiktok.com/doc/tiktok-api-scopes.
-// video.upload = mode brouillon (inbox), utilisé tant que l'app n'est pas auditée.
-// video.publish demandé dès maintenant pour ne pas re-demander le consentement après l'audit Direct Post.
-export const TIKTOK_SCOPES = ["user.info.basic", "video.upload", "video.publish"];
+// video.upload = mode brouillon (inbox), le seul scope de publication disponible tant que
+// l'app n'est PAS auditée. On ne demande PAS video.publish (Direct Post) : ce scope n'existe
+// dans l'app qu'une fois le toggle "Direct Post" activé, qui exige l'audit TikTok — le demander
+// alors qu'il n'est pas configuré côté app ferait échouer l'autorisation OAuth (constaté le 08/07
+// sur l'app réelle : seuls user.info.basic + video.upload sont présents, Direct Post OFF).
+// Quand l'app sera auditée pour le Direct Post, réajouter "video.publish" ici.
+export const TIKTOK_SCOPES = ["user.info.basic", "video.upload"];
 
 function getRedirectUri(): string {
   return `${process.env.APP_URL}/api/oauth/tiktok/callback`;
