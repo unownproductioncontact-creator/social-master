@@ -9,9 +9,12 @@ import {
   fetchInstagramProfile,
   mapInstagramAccountType,
 } from "@/lib/providers/instagram";
+import { appUrl } from "@/lib/app-url";
 
 function redirectToConnections(req: NextRequest, status: "connected" | "error", detail?: string) {
-  const url = new URL("/connections", req.nextUrl.origin);
+  // req.nextUrl.origin reflète l'hôte interne vu par Next.js (ex. localhost:10000 sur Render,
+  // derrière son proxy) et non le domaine public — utiliser APP_URL, jamais l'origin de la requête.
+  const url = new URL("/connections", appUrl());
   url.searchParams.set("instagram", status);
   if (detail) url.searchParams.set("detail", detail);
   return NextResponse.redirect(url);

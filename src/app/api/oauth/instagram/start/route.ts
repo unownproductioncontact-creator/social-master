@@ -1,9 +1,10 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { verifySession } from "@/lib/dal";
 import { createOAuthState } from "@/lib/oauth-state";
 import { buildInstagramAuthorizeUrl } from "@/lib/providers/instagram";
+import { appUrl } from "@/lib/app-url";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   await verifySession();
 
   try {
@@ -16,7 +17,7 @@ export async function GET(req: NextRequest) {
       err instanceof Error && err.message.includes("manquants")
         ? "Pas encore disponible : l'application développeur Meta n'est pas configurée sur le serveur (META_APP_ID / META_APP_SECRET). Cette étape viendra une fois le domaine définitif actif."
         : "Erreur inattendue au démarrage de la connexion Instagram.";
-    const url = new URL("/connections", req.nextUrl.origin);
+    const url = new URL("/connections", appUrl());
     url.searchParams.set("instagram", "error");
     url.searchParams.set("detail", detail);
     return NextResponse.redirect(url);

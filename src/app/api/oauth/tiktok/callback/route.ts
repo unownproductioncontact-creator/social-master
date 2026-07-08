@@ -4,9 +4,13 @@ import { consumeOAuthState } from "@/lib/oauth-state";
 import { db } from "@/lib/db";
 import { encryptToken } from "@/lib/crypto";
 import { exchangeTikTokCode, fetchTikTokUserInfo, fetchTikTokCreatorInfo } from "@/lib/providers/tiktok";
+import { appUrl } from "@/lib/app-url";
 
 function redirectToConnections(req: NextRequest, status: "connected" | "error", detail?: string) {
-  const url = new URL("/connections", req.nextUrl.origin);
+  // req.nextUrl.origin reflète l'hôte interne vu par Next.js (ex. localhost:10000 sur Render,
+  // derrière son proxy) et non le domaine public — vécu le 08/07 : redirection finale vers
+  // localhost après une connexion TikTok pourtant réussie. Utiliser APP_URL, jamais l'origin de la requête.
+  const url = new URL("/connections", appUrl());
   url.searchParams.set("tiktok", status);
   if (detail) url.searchParams.set("detail", detail);
   return NextResponse.redirect(url);
