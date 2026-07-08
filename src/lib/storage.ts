@@ -1,6 +1,7 @@
 import "server-only";
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { appUrl } from "@/lib/app-url";
 
 function getClient(): S3Client {
   const accountId = process.env.R2_ACCOUNT_ID;
@@ -72,5 +73,5 @@ export function buildStorageKey(userId: string, fileName: string): string {
 
 /** URL publique servie par notre propre proxy (pas de domaine custom R2 disponible — voir CLAUDE.md §3). */
 export function getPublicMediaUrl(key: string): string {
-  return `${process.env.APP_URL}/api/m/${key}`;
+  return `${appUrl()}/api/m/${key}`;
 }

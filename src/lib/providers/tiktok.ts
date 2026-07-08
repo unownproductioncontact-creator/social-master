@@ -1,5 +1,6 @@
 import "server-only";
 import { getObjectStream } from "@/lib/storage";
+import { appUrl } from "@/lib/app-url";
 
 const AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/";
 const TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/";
@@ -19,7 +20,7 @@ const CONTENT_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/content/in
 export const TIKTOK_SCOPES = ["user.info.basic", "video.upload"];
 
 function getRedirectUri(): string {
-  return `${process.env.APP_URL}/api/oauth/tiktok/callback`;
+  return `${appUrl()}/api/oauth/tiktok/callback`;
 }
 
 function getAppCredentials() {

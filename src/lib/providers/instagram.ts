@@ -1,4 +1,5 @@
 import "server-only";
+import { appUrl } from "@/lib/app-url";
 
 const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
 const CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token";
@@ -9,7 +10,7 @@ const GRAPH_BASE = "https://graph.instagram.com";
 export const INSTAGRAM_SCOPES = ["instagram_business_basic", "instagram_business_content_publish"];
 
 function getRedirectUri(): string {
-  return `${process.env.APP_URL}/api/oauth/instagram/callback`;
+  return `${appUrl()}/api/oauth/instagram/callback`;
 }
 
 function getAppCredentials() {
