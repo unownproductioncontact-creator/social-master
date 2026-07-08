@@ -14,6 +14,13 @@ function getClient(): S3Client {
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // Les versions récentes du SDK v3 calculent par défaut un checksum (x-amz-checksum-crc32,
+    // requestChecksumCalculation: "WHEN_SUPPORTED") que Cloudflare R2 ne gère pas correctement
+    // sur les URLs présignées — la requête PUT échoue silencieusement côté navigateur
+    // (fetch()/XHR lèvent une erreur réseau, sans code HTTP exploitable). Constaté en prod le
+    // 08/07/2026. Correctif standard R2 : revenir à l'ancien comportement (checksum uniquement
+    // si explicitement requis par l'opération).
+    requestChecksumCalculation: "WHEN_REQUIRED",
   });
 }
 
