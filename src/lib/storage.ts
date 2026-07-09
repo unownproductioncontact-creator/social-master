@@ -1,5 +1,12 @@
 import "server-only";
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  NotFound,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { appUrl } from "@/lib/app-url";
 
@@ -69,6 +76,42 @@ export async function objectExists(key: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+export type HeadObjectResult =
+  | { outcome: "found"; sizeBytes: number }
+  | { outcome: "not_found" }
+  /** Échec réseau/R2 indéterminé (ni confirmation ni infirmation de présence) — voir l'appelant dans complete/route.ts : tolérant, ne doit pas bloquer l'utilisateur pour un aléa R2. */
+  | { outcome: "error"; error: unknown };
+
+/**
+ * HeadObject R2 : confirme l'existence réelle d'un objet et sa taille exacte, sans télécharger
+ * son contenu (contrairement à `objectExists()` ci-dessus, qui ne renvoie qu'un booléen — utilisé
+ * ailleurs par `image-convert.ts`, laissé intact). Distingue explicitement "objet absent"
+ * (`not_found`, cas métier normal) d'une erreur réseau/service indéterminée (`error`, cas
+ * transitoire à ne pas traiter comme une absence).
+ */
+export async function headObject(key: string): Promise<HeadObjectResult> {
+  const client = getClient();
+  try {
+    const result = await client.send(new HeadObjectCommand({ Bucket: getBucket(), Key: key }));
+    return { outcome: "found", sizeBytes: result.ContentLength ?? 0 };
+  } catch (error) {
+    if (error instanceof NotFound) {
+      return { outcome: "not_found" };
+    }
+    // Le SDK v3 ne renvoie pas toujours une NotFound typée pour un HEAD 404 (selon l'implémentation
+    // S3-compatible) — on retombe sur le nom/code HTTP en repli.
+    const name = error instanceof Error ? error.name : undefined;
+    const httpStatus =
+      typeof error === "object" && error !== null && "$metadata" in error
+        ? (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
+        : undefined;
+    if (name === "NotFound" || httpStatus === 404) {
+      return { outcome: "not_found" };
+    }
+    return { outcome: "error", error };
   }
 }
 
