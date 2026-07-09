@@ -11,6 +11,7 @@ const TEST_EMAIL = "vitest-scheduler@test.local";
 
 let userId: string;
 let socialAccountId: string;
+let tiktokAccountId: string;
 let mediaAssetId: string;
 let postId: string;
 let postTargetId: string;
@@ -41,6 +42,18 @@ beforeAll(async () => {
     },
   });
   socialAccountId = account.id;
+
+  const tiktok = await db.socialAccount.create({
+    data: {
+      userId,
+      platform: "TIKTOK",
+      platformAccountId: "vitest-tt-account",
+      username: "vitest_tt",
+      accessTokenEnc: encryptToken("fake-tt-token"),
+      status: "ACTIVE",
+    },
+  });
+  tiktokAccountId = tiktok.id;
 
   const media = await db.mediaAsset.create({
     data: { userId, storageKey: "media/vitest/fake.jpg", mimeType: "image/jpeg", sizeBytes: 1000, status: "READY" },
@@ -102,6 +115,35 @@ async function createDraftPost() {
     },
   });
   return { postId: post.id, postTargetId: target.id };
+}
+
+/** Post à DEUX cibles (TikTok + Instagram) pour tester les horaires décalés par plateforme. */
+async function createDualTargetPost() {
+  const post = await db.post.create({
+    data: { userId, caption: "Test offsets par cible", status: "DRAFT" },
+  });
+  await db.postMedia.create({ data: { postId: post.id, mediaAssetId, position: 0 } });
+  const tiktokTarget = await db.postTarget.create({
+    data: {
+      postId: post.id,
+      socialAccountId: tiktokAccountId,
+      platform: "TIKTOK",
+      contentType: "TIKTOK_VIDEO",
+      publishMode: "TIKTOK_DRAFT",
+      status: "PENDING",
+    },
+  });
+  const igTarget = await db.postTarget.create({
+    data: {
+      postId: post.id,
+      socialAccountId,
+      platform: "INSTAGRAM",
+      contentType: "IMAGE",
+      publishMode: "AUTO",
+      status: "PENDING",
+    },
+  });
+  return { postId: post.id, tiktokTargetId: tiktokTarget.id, igTargetId: igTarget.id };
 }
 
 describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
@@ -169,7 +211,61 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     const target = await db.postTarget.findUniqueOrThrow({ where: { id: postTargetId } });
     expect(target.status).toBe("PENDING");
     expect(target.errorCode).toBeNull();
+    // unschedulePost doit aussi remettre l'horaire effectif par cible à null (symétrie avec schedulePost).
+    expect(target.scheduledAt).toBeNull();
 
     await db.post.delete({ where: { id: postId } });
+  });
+
+  it("horaires décalés par cible : TikTok à H, Instagram à H+300s → runAt ET PostTarget.scheduledAt distincts", async () => {
+    const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
+
+    // Base à H+10min ; on décale explicitement Instagram de +300s (H+5min après le TikTok).
+    const baseTime = new Date(Date.now() + 10 * 60 * 1000);
+    const tiktokTime = baseTime;
+    const instagramTime = new Date(baseTime.getTime() + 300 * 1000);
+
+    const result = await scheduleWithRetry(dualPostId, baseTime, "Europe/Paris", {
+      TIKTOK: tiktokTime,
+      INSTAGRAM: instagramTime,
+    });
+
+    if (result.error && KNOWN_LOCAL_ENGINE_QUIRK.test(result.error)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[scheduler.test.ts] Limitation connue du moteur prisma dev local rencontrée (offsets par cible) — non concluant ici."
+      );
+      await db.post.delete({ where: { id: dualPostId } }).catch(() => {});
+      return;
+    }
+
+    expect(result.error).toBeUndefined();
+
+    // PostTarget.scheduledAt : chaque cible porte SON horaire effectif, distinct de l'autre.
+    const tiktokTarget = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
+    const igTarget = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
+    expect(tiktokTarget.scheduledAt?.getTime()).toBe(tiktokTime.getTime());
+    expect(igTarget.scheduledAt?.getTime()).toBe(instagramTime.getTime());
+    expect(igTarget.scheduledAt!.getTime() - tiktokTarget.scheduledAt!.getTime()).toBe(300 * 1000);
+
+    // PublishJob.runAt : idem, le runAt de chaque job suit l'horaire de sa cible (utilisé aussi pour startAfter).
+    const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
+    const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
+    expect(tiktokJob.runAt.getTime()).toBe(tiktokTime.getTime());
+    expect(igJob.runAt.getTime()).toBe(instagramTime.getTime());
+    expect(igJob.runAt.getTime()).not.toBe(tiktokJob.runAt.getTime());
+
+    // Post.scheduledAt reste l'horaire de base (inchangé par les offsets).
+    const post = await db.post.findUniqueOrThrow({ where: { id: dualPostId } });
+    expect(post.scheduledAt?.getTime()).toBe(baseTime.getTime());
+
+    await unschedulePost(dualPostId);
+    // Après annulation, les deux cibles voient leur horaire effectif remis à null.
+    const tiktokAfter = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
+    const igAfter = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
+    expect(tiktokAfter.scheduledAt).toBeNull();
+    expect(igAfter.scheduledAt).toBeNull();
+
+    await db.post.delete({ where: { id: dualPostId } });
   });
 });

@@ -178,6 +178,9 @@ model PostTarget {
   contentType     PostContentType
   publishMode     PublishMode      @default(AUTO)
   captionOverride String?
+  // Horaire effectif de publication PROPRE à cette cible, en UTC (peut différer de Post.scheduledAt :
+  // ex. TikTok à H et Instagram à H+5min). Null tant que le post n'est pas programmé (voir scheduler.ts).
+  scheduledAt     DateTime?
   platformOptions Json             @default("{}")
   status          PostTargetStatus @default(PENDING)
   platformPostId  String?
