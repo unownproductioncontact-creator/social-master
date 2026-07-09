@@ -1,7 +1,7 @@
 import { FileVideo } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Button } from "@/components/ui/button";
+import { ConfirmDeleteButton } from "@/components/ui/confirm-delete-button";
 import { deleteMediaAsset } from "@/lib/actions/media";
 import { getPublicMediaUrl } from "@/lib/storage";
 import {
@@ -73,16 +73,13 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
         <StatusBadge tone={hasErrors ? "err" : "ok"}>
           {hasErrors ? "Incompatible" : "Compatible"}
         </StatusBadge>
-        <form
-          action={async () => {
-            "use server";
-            await deleteMediaAsset(asset.id);
-          }}
-        >
-          <Button type="submit" variant="ghost" size="sm" className="w-full">
-            Supprimer
-          </Button>
-        </form>
+        <ConfirmDeleteButton
+          onConfirm={deleteMediaAsset.bind(null, asset.id)}
+          title="Supprimer ce média ?"
+          description="Le fichier sera définitivement supprimé de votre stockage. Un média encore utilisé par un post ne peut pas être supprimé."
+          successMessage="Média supprimé."
+          triggerFullWidth
+        />
       </CardContent>
     </Card>
   );

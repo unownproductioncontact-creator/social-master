@@ -5,7 +5,7 @@ import { getPublicMediaUrl } from "@/lib/storage";
 import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { SchedulePanel } from "@/components/composer/schedule-panel";
 import { deletePost } from "@/lib/actions/posts";
-import { Button } from "@/components/ui/button";
+import { ConfirmDeleteButton } from "@/components/ui/confirm-delete-button";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
 import { PageHeader } from "@/components/layout/page-header";
 
@@ -46,18 +46,15 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           </StatusBadge>
         }
         actions={
-          isDraft && (
-            <form
-              action={async () => {
-                "use server";
-                await deletePost(post.id);
-              }}
-            >
-              <Button type="submit" variant="ghost" size="sm">
-                Supprimer
-              </Button>
-            </form>
-          )
+          <ConfirmDeleteButton
+            onConfirm={deletePost.bind(null, post.id)}
+            title="Supprimer ce post ?"
+            description={
+              isDraft
+                ? "Ce brouillon et son contenu seront définitivement supprimés. Les médias associés resteront dans votre médiathèque."
+                : "Le post sera retiré de votre planificateur et sa programmation annulée. Le contenu déjà envoyé sur TikTok ou publié sur Instagram n’est pas affecté. Les médias resteront dans votre médiathèque."
+            }
+          />
         }
       />
 
