@@ -27,7 +27,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
-export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
+export function MediaCard({
+  asset,
+  inUseCount = 0,
+}: {
+  asset: MediaAssetSummary;
+  inUseCount?: number;
+}) {
   const isVideo = asset.mimeType.startsWith("video/");
   const meta = {
     mimeType: asset.mimeType,
@@ -70,13 +76,25 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
           <span>{formatSize(asset.sizeBytes)}</span>
           {asset.durationSec != null && <span className="tabular-nums">{Math.round(asset.durationSec)}s</span>}
         </div>
-        <StatusBadge tone={hasErrors ? "err" : "ok"}>
-          {hasErrors ? "Incompatible" : "Compatible"}
-        </StatusBadge>
+        <div className="flex flex-wrap gap-1">
+          <StatusBadge tone={hasErrors ? "err" : "ok"}>
+            {hasErrors ? "Incompatible" : "Compatible"}
+          </StatusBadge>
+          {inUseCount > 0 && (
+            <StatusBadge tone="muted">
+              Utilisé · {inUseCount} post{inUseCount > 1 ? "s" : ""}
+            </StatusBadge>
+          )}
+        </div>
         <ConfirmDeleteButton
           onConfirm={deleteMediaAsset.bind(null, asset.id)}
           title="Supprimer ce média ?"
-          description="Le fichier sera définitivement supprimé de votre stockage. Un média encore utilisé par un post ne peut pas être supprimé."
+          description={
+            inUseCount > 0
+              ? `Ce média est utilisé par ${inUseCount} post${inUseCount > 1 ? "s" : ""}. ${inUseCount > 1 ? "Ces posts seront" : "Ce post sera"} dé-programmé${inUseCount > 1 ? "s" : ""} et supprimé${inUseCount > 1 ? "s" : ""}, puis le fichier sera définitivement supprimé de votre stockage. Le contenu déjà publié sur les plateformes n’est pas affecté.`
+              : "Le fichier sera définitivement supprimé de votre stockage. Cette action est irréversible."
+          }
+          confirmLabel={inUseCount > 0 ? "Dé-programmer et supprimer" : "Supprimer"}
           successMessage="Média supprimé."
           triggerFullWidth
         />
