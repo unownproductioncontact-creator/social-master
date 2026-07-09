@@ -107,13 +107,15 @@ export function PostComposerForm({
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <div className="space-y-6">
-        <div className="space-y-2">
+      <div className="space-y-5">
+        <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <Label>Média {selectedMedia.length > 1 && `(${selectedMedia.length} sélectionnés, carrousel)`}</Label>
+            <Label className="text-xs font-semibold">
+              Média {selectedMedia.length > 1 && `(${selectedMedia.length} sélectionnés, carrousel)`}
+            </Label>
           </div>
           {mediaOptions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-[13.5px] text-muted-foreground">
               Aucun média disponible. Importez-en un dans la Médiathèque.
             </p>
           ) : (
@@ -126,7 +128,7 @@ export function PostComposerForm({
                     key={media.id}
                     type="button"
                     onClick={() => toggleMedia(media.id)}
-                    className={`relative flex aspect-square items-center justify-center overflow-hidden rounded-md border-2 bg-muted ${
+                    className={`relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border-2 bg-muted ${
                       isSelected ? "border-foreground" : "border-transparent"
                     }`}
                   >
@@ -148,10 +150,12 @@ export function PostComposerForm({
           )}
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <Label htmlFor="caption">Caption</Label>
-            <span className="text-xs text-muted-foreground">{caption.length}/2200</span>
+            <Label htmlFor="caption" className="text-xs font-semibold">
+              Caption
+            </Label>
+            <span className="text-[11.5px] text-muted-foreground">{caption.length}/2200</span>
           </div>
           <Textarea
             id="caption"
@@ -162,8 +166,10 @@ export function PostComposerForm({
           />
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="hashtags">Hashtags</Label>
+        <div className="space-y-1.5">
+          <Label htmlFor="hashtags" className="text-xs font-semibold">
+            Hashtags
+          </Label>
           <Input
             id="hashtags"
             value={hashtagsText}
@@ -172,8 +178,8 @@ export function PostComposerForm({
           />
         </div>
 
-        <div className="space-y-3">
-          <Label>Plateformes</Label>
+        <div className="space-y-2.5">
+          <Label className="text-xs font-semibold">Plateformes</Label>
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <Checkbox
@@ -182,7 +188,7 @@ export function PostComposerForm({
                 disabled={!instagramConnected}
                 onCheckedChange={(checked) => setTargetInstagram(checked === true)}
               />
-              <Label htmlFor="target-instagram" className="font-normal">
+              <Label htmlFor="target-instagram" className="text-[13.5px] font-normal">
                 Instagram {!instagramConnected && <span className="text-muted-foreground">(non connecté)</span>}
                 {instagramConnected && igContentType && (
                   <Badge variant="outline" className="ml-2 text-xs">
@@ -198,7 +204,7 @@ export function PostComposerForm({
                   checked={targetInstagramStory}
                   onCheckedChange={(checked) => setTargetInstagramStory(checked === true)}
                 />
-                <Label htmlFor="target-instagram-story" className="font-normal text-muted-foreground">
+                <Label htmlFor="target-instagram-story" className="text-[13.5px] font-normal text-muted-foreground">
                   Publier en Story plutôt qu'en {mediaMeta[0]?.isVideo ? "Reel" : "post"}
                 </Label>
               </div>
@@ -211,7 +217,7 @@ export function PostComposerForm({
               disabled={!tiktokConnected || tiktokContentType === null}
               onCheckedChange={(checked) => setTargetTiktok(checked === true)}
             />
-            <Label htmlFor="target-tiktok" className="font-normal">
+            <Label htmlFor="target-tiktok" className="text-[13.5px] font-normal">
               TikTok{" "}
               {!tiktokConnected && <span className="text-muted-foreground">(non connecté)</span>}
               {tiktokConnected && tiktokContentType === null && selectedMedia.length > 0 && (
@@ -262,7 +268,7 @@ function PreviewMock({ media, extraCount, caption }: { media: MediaOption | null
             <img src={media.url} alt="" className="size-full object-cover" />
           )
         ) : (
-          <p className="p-4 text-center text-xs text-muted-foreground">Sélectionnez un média</p>
+          <p className="p-4 text-center text-[13.5px] text-muted-foreground">Sélectionnez un média</p>
         )}
         {extraCount > 0 && (
           <Badge className="absolute right-2 top-2" variant="secondary">
@@ -271,7 +277,7 @@ function PreviewMock({ media, extraCount, caption }: { media: MediaOption | null
         )}
       </div>
       <CardContent className="py-3">
-        <p className="whitespace-pre-wrap text-xs text-muted-foreground">{caption || "Votre légende apparaîtra ici."}</p>
+        <p className="whitespace-pre-wrap text-[11.5px] text-muted-foreground">{caption || "Votre légende apparaîtra ici."}</p>
       </CardContent>
     </Card>
   );

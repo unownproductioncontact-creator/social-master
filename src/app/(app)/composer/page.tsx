@@ -51,15 +51,15 @@ export default async function ComposerPage() {
       />
 
       {drafts.length > 0 && (
-        <div className="space-y-3">
-          <h2 className="text-sm font-medium text-muted-foreground">Brouillons récents</h2>
+        <div className="space-y-2.5">
+          <h2 className="text-[13.5px] font-semibold">Brouillons récents</h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {drafts.map((draft) => (
               <Link key={draft.id} href={`/composer/${draft.id}`}>
                 <Card className="transition-colors hover:bg-muted/50">
-                  <CardContent className="py-3">
-                    <p className="truncate text-sm">{draft.caption || "(sans légende)"}</p>
-                    <p className="text-xs text-muted-foreground">
+                  <CardContent className="py-0">
+                    <p className="truncate text-[13.5px]">{draft.caption || "(sans légende)"}</p>
+                    <p className="mt-0.5 text-[11.5px] text-muted-foreground">
                       Modifié le {draft.updatedAt.toLocaleDateString("fr-FR")}
                     </p>
                   </CardContent>

@@ -203,7 +203,7 @@ function formatSize(bytes: number): string {
 function ItemStatusIcon({ state }: { state: UploadItem<File, { mediaAssetId: string }>["state"] }) {
   switch (state) {
     case "done":
-      return <CircleCheck className="size-4 text-primary" />;
+      return <CircleCheck className="size-4 text-primary-strong" />;
     case "error":
       return <CircleAlert className="size-4 text-destructive" />;
     case "uploading":
@@ -227,21 +227,21 @@ function UploadRow({
       <ItemStatusIcon state={item.state} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <p className="truncate text-sm font-medium">{item.file.name}</p>
-          <span className="shrink-0 text-xs text-muted-foreground">{formatSize(item.file.size)}</span>
+          <p className="truncate text-[13.5px] font-semibold">{item.file.name}</p>
+          <span className="shrink-0 text-[11px] text-muted-foreground">{formatSize(item.file.size)}</span>
         </div>
         {item.state === "uploading" || item.state === "pending" ? (
           <Progress value={item.state === "pending" ? 0 : item.progress} className="mt-1.5 gap-0">
-            <ProgressTrack className="h-1.5">
-              <ProgressIndicator />
+            <ProgressTrack className="h-[3px] bg-secondary">
+              <ProgressIndicator className="bg-primary-strong" />
             </ProgressTrack>
           </Progress>
         ) : item.state === "error" ? (
-          <p className="mt-0.5 truncate text-xs text-destructive">{item.error ?? "Échec de l'envoi."}</p>
+          <p className="mt-0.5 truncate text-[11.5px] text-destructive">{item.error ?? "Échec de l'envoi."}</p>
         ) : item.state === "cancelled" ? (
-          <p className="mt-0.5 text-xs text-muted-foreground">Annulé.</p>
+          <p className="mt-0.5 text-[11.5px] text-muted-foreground">Annulé.</p>
         ) : (
-          <p className="mt-0.5 text-xs text-muted-foreground">Importé.</p>
+          <p className="mt-0.5 text-[11.5px] text-muted-foreground">Importé.</p>
         )}
       </div>
       {(item.state === "uploading" || item.state === "pending") && (
@@ -361,18 +361,18 @@ export function MediaUploader({ onUploaded }: { onUploaded?: (media: UploadedMed
           setIsDragging(false);
           handleFiles(e.dataTransfer.files);
         }}
-        className={`flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed p-10 text-center transition-colors ${
-          isDragging ? "border-foreground bg-muted/50" : "border-border"
+        className={`flex flex-col items-center justify-center gap-2.5 rounded-lg border border-dashed p-8 text-center transition-colors ${
+          isDragging ? "border-primary-strong bg-accent-strong" : "border-input"
         }`}
       >
         {isUploading ? (
-          <Loader2 className="size-8 animate-spin text-muted-foreground" />
+          <Loader2 className="size-7 animate-spin text-muted-foreground" />
         ) : (
-          <UploadCloud className="size-8 text-muted-foreground" />
+          <UploadCloud className="size-7 text-muted-foreground" />
         )}
         <div>
-          <p className="text-sm font-medium">Glissez-déposez vos images ou vidéos</p>
-          <p className="text-xs text-muted-foreground">JPEG, PNG, WebP, MP4, MOV, WebM — 4 Go max</p>
+          <p className="text-[13.5px] font-semibold">Glissez-déposez vos images ou vidéos</p>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">JPEG, PNG, WebP, MP4, MOV, WebM — 4 Go max</p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={() => inputRef.current?.click()}>
           Parcourir

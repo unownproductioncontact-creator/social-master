@@ -2,16 +2,16 @@ import { getCurrentUser } from "@/lib/dal";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { UserMenu } from "@/components/layout/user-menu";
 import { MobileHeader } from "@/components/layout/mobile-header";
+import { BrandMark } from "@/components/layout/brand-mark";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser();
 
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
-      <aside className="hidden w-64 flex-col border-r bg-muted/20 lg:flex">
-        <div className="flex h-14 items-center gap-2 border-b px-4">
-          <span className="bg-brand-gradient size-6 shrink-0 rounded-md" aria-hidden="true" />
-          <span className="text-base font-semibold">Social Master</span>
+      <aside className="hidden w-56 flex-col border-r bg-sidebar lg:flex">
+        <div className="flex h-14 items-center px-4">
+          <BrandMark />
         </div>
         <div className="flex-1 overflow-y-auto">
           <SidebarNav />
@@ -20,7 +20,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </aside>
       <MobileHeader user={user ? { name: user.name, email: user.email } : null} />
       <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">{children}</div>
+        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-6">{children}</div>
       </main>
     </div>
   );

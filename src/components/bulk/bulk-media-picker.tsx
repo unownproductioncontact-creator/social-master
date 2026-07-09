@@ -56,7 +56,7 @@ export function BulkMediaPicker({
                 onClick={() => onPick(m)}
                 title={m.name}
                 className={cn(
-                  "group relative flex aspect-square items-center justify-center overflow-hidden rounded-md border-2 bg-muted transition-colors",
+                  "group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border-2 bg-muted transition-colors",
                   picked ? "border-primary opacity-60" : "border-transparent hover:border-border"
                 )}
               >

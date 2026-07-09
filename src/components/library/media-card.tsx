@@ -1,6 +1,6 @@
 import { FileVideo } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { deleteMediaAsset } from "@/lib/actions/media";
 import { getPublicMediaUrl } from "@/lib/storage";
@@ -43,8 +43,8 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
   const hasErrors = issues.some((i) => i.level === "error");
 
   return (
-    <Card className="overflow-hidden py-0">
-      <div className="flex aspect-square items-center justify-center bg-muted">
+    <Card className="gap-0 overflow-hidden py-0">
+      <div className="flex aspect-square items-center justify-center overflow-hidden bg-[linear-gradient(145deg,#2b2d3a,#4a4d63)] dark:bg-[linear-gradient(145deg,#1c1d26,#33354a)]">
         {isVideo ? (
           asset.thumbnailKey ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -54,7 +54,7 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
               className="size-full object-cover"
             />
           ) : (
-            <FileVideo className="size-10 text-muted-foreground" />
+            <FileVideo className="size-8 text-white/85" />
           )
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
@@ -65,14 +65,14 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
           />
         )}
       </div>
-      <CardContent className="space-y-2 pb-4">
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <CardContent className="space-y-2 py-2.5">
+        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>{formatSize(asset.sizeBytes)}</span>
-          {asset.durationSec != null && <span>{Math.round(asset.durationSec)}s</span>}
+          {asset.durationSec != null && <span className="tabular-nums">{Math.round(asset.durationSec)}s</span>}
         </div>
-        <Badge variant={hasErrors ? "destructive" : "secondary"} className="text-xs">
+        <StatusBadge tone={hasErrors ? "err" : "ok"}>
           {hasErrors ? "Incompatible" : "Compatible"}
-        </Badge>
+        </StatusBadge>
         <form
           action={async () => {
             "use server";

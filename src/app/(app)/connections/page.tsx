@@ -25,14 +25,16 @@ export default async function ConnectionsPage({
   const feedbackIsError = feedback === "error";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader title="Connexions" description="Connectez vos comptes Instagram et TikTok." />
 
       {feedback && (
         <Alert variant={feedbackIsError ? "destructive" : "default"}>
           {feedbackIsError ? <AlertTriangle className="size-4" /> : <CheckCircle2 className="size-4" />}
-          <AlertTitle>{feedbackIsError ? "Échec de connexion" : "Compte connecté"}</AlertTitle>
-          {params.detail && <AlertDescription>{params.detail}</AlertDescription>}
+          <AlertTitle className="text-[13.5px] font-semibold">
+            {feedbackIsError ? "Échec de connexion" : "Compte connecté"}
+          </AlertTitle>
+          {params.detail && <AlertDescription className="text-[12.5px]">{params.detail}</AlertDescription>}
         </Alert>
       )}
 

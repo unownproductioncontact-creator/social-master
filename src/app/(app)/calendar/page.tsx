@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { addMonths, addDays, startOfMonth, endOfMonth, format, parse, isValid } from "date-fns";
 import { fr } from "date-fns/locale";
-import { verifySession } from "@/lib/dal";
+import { verifySession, getCurrentUser } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { MonthGrid } from "@/components/calendar/month-grid";
 import { buttonVariants } from "@/components/ui/button";
@@ -17,6 +17,8 @@ function parseMonthParam(month: string | undefined): Date {
 
 export default async function CalendarPage(props: PageProps<"/calendar">) {
   const session = await verifySession();
+  const user = await getCurrentUser();
+  const timezone = user?.timezone ?? "Europe/Paris";
   const searchParams = await props.searchParams;
   const monthParam = Array.isArray(searchParams.month) ? searchParams.month[0] : searchParams.month;
   const month = parseMonthParam(monthParam);
@@ -62,20 +64,20 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
         description="Vue mensuelle de vos publications programmées."
         actions={
           <>
-            <Link href={`/calendar?month=${prevMonth}`} className={buttonVariants({ variant: "outline", size: "icon" })}>
+            <Link href={`/calendar?month=${prevMonth}`} className={buttonVariants({ variant: "outline", size: "icon-sm" })}>
               <ChevronLeft className="size-4" />
             </Link>
-            <span className="w-32 text-center text-sm font-medium capitalize">
+            <span className="w-28 text-center text-[13.5px] font-semibold capitalize">
               {format(month, "MMMM yyyy", { locale: fr })}
             </span>
-            <Link href={`/calendar?month=${nextMonth}`} className={buttonVariants({ variant: "outline", size: "icon" })}>
+            <Link href={`/calendar?month=${nextMonth}`} className={buttonVariants({ variant: "outline", size: "icon-sm" })}>
               <ChevronRight className="size-4" />
             </Link>
           </>
         }
       />
 
-      <MonthGrid month={month} posts={calendarPosts} />
+      <MonthGrid month={month} posts={calendarPosts} timezone={timezone} />
 
       {calendarPosts.length === 0 && (
         <EmptyState

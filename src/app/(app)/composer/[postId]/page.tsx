@@ -6,16 +6,8 @@ import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { SchedulePanel } from "@/components/composer/schedule-panel";
 import { deletePost } from "@/lib/actions/posts";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
 import { PageHeader } from "@/components/layout/page-header";
-
-const POST_STATUS_LABELS: Record<string, string> = {
-  DRAFT: "Brouillon",
-  SCHEDULED: "Programmé",
-  PARTIALLY_PUBLISHED: "Partiellement publié",
-  PUBLISHED: "Publié",
-  FAILED: "Échoué",
-};
 
 export default async function EditPostPage(props: PageProps<"/composer/[postId]">) {
   const session = await verifySession();
@@ -49,9 +41,9 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
       <PageHeader
         title={isDraft ? "Modifier le brouillon" : "Détail du post"}
         description={
-          <Badge variant={post.status === "FAILED" ? "destructive" : "secondary"} className="mt-1">
-            {POST_STATUS_LABELS[post.status] ?? post.status}
-          </Badge>
+          <StatusBadge tone={postStatusTone(post.status)} className="mt-1">
+            {postStatusLabel(post.status)}
+          </StatusBadge>
         }
         actions={
           isDraft && (
@@ -88,7 +80,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           }}
         />
       ) : (
-        <div className="max-w-xl space-y-2 whitespace-pre-wrap rounded-md border p-4 text-sm">
+        <div className="max-w-xl space-y-2 whitespace-pre-wrap rounded-lg border border-border bg-card p-4 text-[13.5px]">
           {post.caption}
           {post.hashtags.length > 0 && (
             <p className="text-muted-foreground">{post.hashtags.map((h) => `#${h}`).join(" ")}</p>
@@ -108,6 +100,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             status: t.status,
             errorMessage: t.errorMessage,
             platformPostUrl: t.platformPostUrl,
+            scheduledAt: t.scheduledAt,
           }))}
           canSchedule={Boolean(post.postMedia.length > 0 && post.postTargets.length > 0)}
         />

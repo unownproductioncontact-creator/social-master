@@ -6,26 +6,15 @@ import {
   endOfWeek,
   eachDayOfInterval,
   isSameMonth,
-  isToday,
   format,
 } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 import { fr } from "date-fns/locale";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
+import { PlatformChip, platformLabel } from "@/components/ui/platform-chip";
 import { cn } from "@/lib/utils";
 
 const WEEKDAY_LABELS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  SCHEDULED: "default",
-  PUBLISHED: "secondary",
-  PARTIALLY_PUBLISHED: "outline",
-  FAILED: "destructive",
-};
-
-const PLATFORM_LABELS: Record<string, string> = {
-  INSTAGRAM: "Instagram",
-  TIKTOK: "TikTok",
-};
 
 type CalendarTarget = {
   id: string;
@@ -52,20 +41,31 @@ function targetSpan(post: CalendarPost): { earliest: Date; latest: Date } {
 // Libellé compact de l'horaire à afficher sur un chip de post : une heure unique si toutes les
 // cibles partagent le même horaire (à la minute près), sinon chaque horaire par cible séparé par "/"
 // (ex. "18:00/18:05" pour TikTok à H et Instagram à H+5min).
-function formatTimeLabel(post: CalendarPost): string {
-  if (post.targets.length === 0) return format(post.scheduledAt, "HH:mm");
-  const uniqueTimes = Array.from(new Set(post.targets.map((t) => format(t.scheduledAt, "HH:mm"))));
+function formatTimeLabel(post: CalendarPost, timezone: string): string {
+  if (post.targets.length === 0)
+    return formatInTimeZone(post.scheduledAt, timezone, "HH:mm");
+  const uniqueTimes = Array.from(
+    new Set(post.targets.map((t) => formatInTimeZone(t.scheduledAt, timezone, "HH:mm")))
+  );
   return uniqueTimes.sort().join("/");
 }
 
 // Détail complet "Plateforme · HH:mm" par cible, pour le tooltip et la vue agenda mobile.
-function targetDetails(post: CalendarPost): string[] {
+function targetDetails(post: CalendarPost, timezone: string): string[] {
   return post.targets.map(
-    (t) => `${PLATFORM_LABELS[t.platform] ?? t.platform} · ${format(t.scheduledAt, "HH:mm")}`
+    (t) => `${platformLabel(t.platform)} · ${formatInTimeZone(t.scheduledAt, timezone, "HH:mm")}`
   );
 }
 
-export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[] }) {
+export function MonthGrid({
+  month,
+  posts,
+  timezone,
+}: {
+  month: Date;
+  posts: CalendarPost[];
+  timezone: string;
+}) {
   const monthStart = startOfMonth(month);
   const monthEnd = endOfMonth(month);
   const gridStart = startOfWeek(monthStart, { weekStartsOn: 1 });
@@ -74,10 +74,15 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
 
   // Regroupement par jour : un post apparaît sur CHAQUE jour où au moins une de ses cibles est
   // programmée (cas rare mais réel : cibles à cheval sur minuit, ex. 23:58 + 00:03).
+  // « Aujourd'hui » dans le fuseau du user (le fuseau du process est UTC en prod).
+  const todayKey = formatInTimeZone(new Date(), timezone, "yyyy-MM-dd");
   const postsByDay = new Map<string, CalendarPost[]>();
   for (const post of posts) {
     const { earliest, latest } = targetSpan(post);
-    const dayKeys = new Set([format(earliest, "yyyy-MM-dd"), format(latest, "yyyy-MM-dd")]);
+    const dayKeys = new Set([
+      formatInTimeZone(earliest, timezone, "yyyy-MM-dd"),
+      formatInTimeZone(latest, timezone, "yyyy-MM-dd"),
+    ]);
     for (const key of dayKeys) {
       const existing = postsByDay.get(key) ?? [];
       existing.push(post);
@@ -95,43 +100,65 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
     <>
       <div className="space-y-3 md:hidden">
         {agendaDays.length === 0 ? (
-          <p className="rounded-lg border p-4 text-sm text-muted-foreground">
+          <p className="rounded-lg border border-border p-4 text-[13.5px] text-muted-foreground">
             Aucune publication programmée ce mois-ci.
           </p>
         ) : (
           agendaDays.map(({ day, key }) => {
             const dayPosts = postsByDay.get(key) ?? [];
             return (
-              <div key={key} className="overflow-hidden rounded-lg border">
-                <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-sm font-medium">
+              <div key={key} className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5 text-[13.5px] font-semibold">
                   <span
                     className={cn(
-                      "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-xs",
-                      isToday(day) && "bg-foreground text-background"
+                      "inline-flex size-6 shrink-0 items-center justify-center rounded-lg text-xs tabular-nums",
+                      key === todayKey && "bg-primary-strong font-bold text-primary-foreground"
                     )}
                   >
                     {format(day, "d")}
                   </span>
                   <span className="capitalize">{format(day, "EEEE d MMMM", { locale: fr })}</span>
                 </div>
-                <div className="space-y-1 p-2">
-                  {dayPosts.map((post) => (
-                    <Link key={post.id} href={`/composer/${post.id}`} className="block">
-                      <Badge
-                        variant={STATUS_VARIANT[post.status] ?? "outline"}
-                        title={targetDetails(post).join(" · ")}
-                        className="block w-full truncate text-left font-normal"
+                <div className="space-y-1.5 p-2.5">
+                  {dayPosts.map((post) => {
+                    const isFailed = post.status === "FAILED";
+                    return (
+                      <Link
+                        key={post.id}
+                        href={`/composer/${post.id}`}
+                        className="block rounded-md border border-border p-2 text-[13px] hover:bg-muted/50"
                       >
-                        <span className="tabular-nums">{formatTimeLabel(post)}</span> ·{" "}
-                        {post.caption || "(sans légende)"}
-                      </Badge>
-                      {post.targets.length > 1 && (
-                        <p className="mt-0.5 truncate pl-1 text-[11px] text-muted-foreground">
-                          {targetDetails(post).join(" · ")}
-                        </p>
-                      )}
-                    </Link>
-                  ))}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium">
+                            {isFailed && (
+                              <span
+                                aria-hidden="true"
+                                className="mr-1.5 inline-block size-[5px] rounded-full bg-destructive align-middle"
+                              />
+                            )}
+                            {post.caption || "(sans légende)"}
+                          </span>
+                          <StatusBadge tone={postStatusTone(post.status)} className="shrink-0">
+                            {postStatusLabel(post.status)}
+                          </StatusBadge>
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {post.targets.map((target) => (
+                            <PlatformChip
+                              key={target.id}
+                              platform={target.platform}
+                              time={formatInTimeZone(target.scheduledAt, timezone, "HH:mm")}
+                            />
+                          ))}
+                          {post.targets.length === 0 && (
+                            <span className="tabular-nums text-[11.5px] text-muted-foreground">
+                              {formatTimeLabel(post, timezone)}
+                            </span>
+                          )}
+                        </div>
+                      </Link>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -139,8 +166,8 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
         )}
       </div>
 
-      <div className="hidden overflow-hidden rounded-lg border md:block">
-        <div className="grid grid-cols-7 border-b bg-muted/40 text-xs font-medium text-muted-foreground">
+      <div className="hidden overflow-hidden rounded-lg border border-border bg-card md:block">
+        <div className="grid grid-cols-7 border-b border-border text-[10px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">
           {WEEKDAY_LABELS.map((label) => (
             <div key={label} className="px-2 py-2">
               {label}
@@ -151,35 +178,64 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
           {days.map((day) => {
             const key = format(day, "yyyy-MM-dd");
             const dayPosts = postsByDay.get(key) ?? [];
+            const inMonth = isSameMonth(day, month);
             return (
               <div
                 key={key}
                 className={cn(
-                  "min-h-28 border-b border-r p-2 last:border-r-0",
-                  !isSameMonth(day, month) && "bg-muted/20 text-muted-foreground"
+                  "min-h-24 border-b border-r border-border p-1.5 last:border-r-0",
+                  !inMonth && "bg-muted/30 text-muted-foreground"
                 )}
               >
                 <div
                   className={cn(
-                    "mb-1 inline-flex size-6 items-center justify-center rounded-full text-xs",
-                    isToday(day) && "bg-foreground text-background"
+                    "mb-1 inline-flex size-6 items-center justify-center rounded-lg text-xs tabular-nums text-muted-foreground",
+                    !inMonth && "opacity-50",
+                    key === todayKey && "bg-primary-strong font-bold text-primary-foreground opacity-100"
                   )}
                 >
                   {format(day, "d")}
                 </div>
                 <div className="space-y-1">
-                  {dayPosts.map((post) => (
-                    <Link key={post.id} href={`/composer/${post.id}`}>
-                      <Badge
-                        variant={STATUS_VARIANT[post.status] ?? "outline"}
-                        title={targetDetails(post).join(" · ")}
-                        className="block w-full truncate text-left font-normal"
+                  {dayPosts.map((post) => {
+                    const isFailed = post.status === "FAILED";
+                    const singleTarget = post.targets.length === 1 ? post.targets[0] : null;
+                    return (
+                      <Link
+                        key={post.id}
+                        href={`/composer/${post.id}`}
+                        title={targetDetails(post, timezone).join(" · ")}
+                        className="block"
                       >
-                        <span className="tabular-nums">{formatTimeLabel(post)}</span> ·{" "}
-                        {post.caption || "(sans légende)"}
-                      </Badge>
-                    </Link>
-                  ))}
+                        {singleTarget ? (
+                          <PlatformChip
+                            platform={singleTarget.platform}
+                            time={formatInTimeZone(singleTarget.scheduledAt, timezone, "HH:mm")}
+                            className={cn(
+                              "w-full justify-start truncate",
+                              isFailed && "border-destructive/40 text-destructive"
+                            )}
+                          />
+                        ) : (
+                          <span className="flex w-full items-center gap-1 truncate rounded-full border border-input bg-secondary px-2 py-[2.5px] text-[11px] font-semibold text-secondary-foreground">
+                            <span
+                              aria-hidden="true"
+                              className={cn(
+                                "size-[5px] shrink-0 rounded-full",
+                                isFailed ? "bg-destructive" : "bg-primary-strong"
+                              )}
+                            />
+                            <span className="truncate">
+                              {post.targets.length > 0 ? (
+                                <span className="tabular-nums font-bold">{formatTimeLabel(post, timezone)}</span>
+                              ) : null}{" "}
+                              {post.caption || "(sans légende)"}
+                            </span>
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
                 </div>
               </div>
             );

@@ -41,7 +41,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   >((best, item) => (best === null || item.href.length > best.length ? item.href : best), null);
 
   return (
-    <nav className="flex flex-col gap-1 p-3">
+    <nav className="flex flex-col gap-0.5 p-2.5">
       {NAV_ITEMS.map((item) => {
         const isActive = item.href === activeHref;
         const Icon = item.icon;
@@ -51,13 +51,14 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             href={item.href}
             onClick={onNavigate}
             className={cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              // Maquette : padding 7.5px 10px, rayon 8px, 13.5px, icônes 15px.
+              "flex items-center gap-2.5 rounded-md px-2.5 py-[7.5px] text-[13.5px] transition-colors",
               isActive
-                ? "bg-accent-strong text-primary-strong"
-                : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                ? "bg-accent-strong font-semibold text-primary-strong [&>svg]:text-primary-strong"
+                : "font-medium text-secondary-foreground hover:bg-secondary hover:text-foreground [&>svg]:text-muted-foreground"
             )}
           >
-            <Icon className="size-4" />
+            <Icon className="size-[15px] shrink-0" />
             {item.label}
           </Link>
         );

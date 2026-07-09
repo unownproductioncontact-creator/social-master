@@ -7,8 +7,9 @@ import { formatInTimeZone } from "date-fns-tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
+import { PlatformChip } from "@/components/ui/platform-chip";
 import { scheduleExistingPost, unschedulePostAction } from "@/lib/actions/posts";
 
 type TargetStatus = {
@@ -17,14 +18,8 @@ type TargetStatus = {
   status: string;
   errorMessage: string | null;
   platformPostUrl: string | null;
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  PENDING: "En attente",
-  PROCESSING: "En cours",
-  PUBLISHED: "Publié",
-  SENT_TO_INBOX: "Envoyé en brouillon TikTok",
-  FAILED: "Échoué",
+  /** Horaire effectif propre à cette cible (peut différer de Post.scheduledAt, ex. IG à H+5min). */
+  scheduledAt: Date | null;
 };
 
 export function SchedulePanel({
@@ -70,15 +65,15 @@ export function SchedulePanel({
   const isScheduledOrBeyond = postStatus !== "DRAFT";
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Programmation</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Card className="gap-0 py-0">
+      <h3 className="border-b border-border px-[15px] py-3 text-[13.5px] font-semibold">Programmation</h3>
+      <CardContent className="space-y-4 py-3.5">
         {!isScheduledOrBeyond ? (
           <div className="space-y-3">
-            <div className="space-y-2">
-              <Label htmlFor="scheduled-at">Date et heure ({timezone})</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="scheduled-at" className="text-xs font-semibold">
+                Date et heure ({timezone})
+              </Label>
               <Input
                 id="scheduled-at"
                 type="datetime-local"
@@ -97,22 +92,28 @@ export function SchedulePanel({
           </div>
         ) : (
           <div className="space-y-3">
-            <p className="text-sm">
+            <p className="text-[13.5px]">
               Programmé pour le{" "}
-              <span className="font-medium">
+              <span className="font-semibold">
                 {scheduledAt ? formatInTimeZone(scheduledAt, timezone, "dd/MM/yyyy à HH:mm") : "—"}
               </span>
             </p>
             <div className="space-y-2">
               {targets.map((target) => (
-                <div key={target.id} className="flex items-center justify-between gap-2 text-sm">
-                  <span>{target.platform}</span>
+                <div key={target.id} className="flex items-center justify-between gap-2 text-[13.5px]">
+                  <PlatformChip
+                    platform={target.platform}
+                    time={(() => {
+                      const effective = target.scheduledAt ?? scheduledAt;
+                      return effective ? formatInTimeZone(effective, timezone, "HH:mm") : undefined;
+                    })()}
+                  />
                   <div className="flex items-center gap-2">
-                    <Badge variant={target.status === "FAILED" ? "destructive" : "secondary"}>
-                      {STATUS_LABELS[target.status] ?? target.status}
-                    </Badge>
+                    <StatusBadge tone={postStatusTone(target.status)}>
+                      {postStatusLabel(target.status)}
+                    </StatusBadge>
                     {target.platformPostUrl && (
-                      <a href={target.platformPostUrl} target="_blank" rel="noreferrer" className="text-xs underline">
+                      <a href={target.platformPostUrl} target="_blank" rel="noreferrer" className="text-xs font-semibold text-primary underline-offset-4 hover:underline">
                         Voir
                       </a>
                     )}

@@ -27,17 +27,23 @@ export function ProfileForm({ name, email, timezone }: { name: string | null; em
   }
 
   return (
-    <div className="max-w-md space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="name">Nom</Label>
+    <div className="space-y-3.5">
+      <div className="space-y-1.5">
+        <Label htmlFor="name" className="text-[12.5px] font-semibold text-foreground">
+          Nom
+        </Label>
         <Input id="name" value={nameValue} onChange={(e) => setNameValue(e.target.value)} />
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
+      <div className="space-y-1.5">
+        <Label htmlFor="email" className="text-[12.5px] font-semibold text-foreground">
+          Email
+        </Label>
         <Input id="email" value={email} disabled />
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="timezone">Fuseau horaire</Label>
+      <div className="space-y-1.5">
+        <Label htmlFor="timezone" className="text-[12.5px] font-semibold text-foreground">
+          Fuseau horaire
+        </Label>
         <Select value={timezoneValue} onValueChange={(value) => setTimezoneValue(value as string)}>
           <SelectTrigger id="timezone" className="w-full">
             <SelectValue />

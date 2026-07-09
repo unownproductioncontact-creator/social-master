@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { fromZonedTime } from "date-fns-tz";
 import { Layers, Info, Plus, Loader2 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -340,11 +340,9 @@ export function BulkComposer({
   return (
     <div className="space-y-6">
       {/* 1. Ajout de vidéos : upload + sélection depuis la médiathèque */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Ajouter des vidéos</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <Card className="gap-0 py-0">
+        <h3 className="border-b border-border px-[15px] py-3 text-[13.5px] font-semibold">Ajouter des vidéos</h3>
+        <CardContent className="space-y-4 py-3.5">
           <MediaUploader onUploaded={handleUploaded} />
           {libraryMedia.length > 0 && (
             <BulkMediaPicker
@@ -365,22 +363,20 @@ export function BulkComposer({
       </Card>
 
       {/* Avertissement TikTok PERMANENT (bandeau, pas un toast) */}
-      <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-[12.5px] text-muted-foreground">
         <Info className="mt-0.5 size-4 shrink-0" />
         <p>
-          En mode brouillon TikTok, la légende n'est <span className="font-medium">pas transmise</span> à
-          l'application : utilisez le bouton <span className="font-medium">Copier</span> de chaque carte,
+          En mode brouillon TikTok, la légende n'est <span className="font-semibold text-foreground">pas transmise</span> à
+          l'application : utilisez le bouton <span className="font-semibold text-foreground">Copier</span> de chaque carte,
           puis collez-la dans TikTok au moment de finaliser la publication.
         </p>
       </div>
 
       {/* 2. Réglages du lot */}
       {hasCards && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Réglages du lot</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
+        <Card className="gap-0 py-0">
+          <h3 className="border-b border-border px-[15px] py-3 text-[13.5px] font-semibold">Réglages du lot</h3>
+          <CardContent className="space-y-6 py-3.5">
             {/* (a) Intervalle entre plateformes */}
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -389,7 +385,7 @@ export function BulkComposer({
                   checked={offsetEnabled}
                   onCheckedChange={(checked) => setOffsetEnabled(checked === true)}
                 />
-                <Label htmlFor="offset-enabled" className="font-normal">
+                <Label htmlFor="offset-enabled" className="text-[13.5px] font-normal">
                   Publier TikTok d'abord, Instagram 5 min après
                 </Label>
               </div>
@@ -417,10 +413,12 @@ export function BulkComposer({
 
             {/* (b) Application groupée */}
             <div className="space-y-4 border-t border-border pt-4">
-              <p className="text-sm font-medium">Appliquer à toutes les cartes</p>
+              <p className="text-[13.5px] font-semibold">Appliquer à toutes les cartes</p>
 
               <div className="space-y-1.5">
-                <Label htmlFor="group-caption">Légende commune</Label>
+                <Label htmlFor="group-caption" className="text-xs font-semibold">
+                  Légende commune
+                </Label>
                 <Textarea
                   id="group-caption"
                   value={groupCaption}
@@ -434,7 +432,9 @@ export function BulkComposer({
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="group-hashtags">Hashtags communs</Label>
+                <Label htmlFor="group-hashtags" className="text-xs font-semibold">
+                  Hashtags communs
+                </Label>
                 <Input
                   id="group-hashtags"
                   value={groupHashtags}
@@ -453,7 +453,9 @@ export function BulkComposer({
 
               <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
                 <div className="space-y-1.5">
-                  <Label htmlFor="start-time">Heure de départ</Label>
+                  <Label htmlFor="start-time" className="text-xs font-semibold">
+                    Heure de départ
+                  </Label>
                   <Input
                     id="start-time"
                     type="datetime-local"
@@ -462,7 +464,9 @@ export function BulkComposer({
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="interval">Espacer de (min)</Label>
+                  <Label htmlFor="interval" className="text-xs font-semibold">
+                    Espacer de (min)
+                  </Label>
                   <Input
                     id="interval"
                     type="number"
@@ -479,16 +483,16 @@ export function BulkComposer({
             </div>
 
             {/* (c) Compteur de capacité TikTok + avertissements */}
-            <div className="space-y-2 border-t border-border pt-4 text-sm">
+            <div className="space-y-2 border-t border-border pt-4 text-[12.5px]">
               <p className={tiktokWouldExceed ? "text-destructive" : "text-muted-foreground"}>
-                <span className="font-medium">{initialQuota.tiktok.current}</span> brouillon(s) TikTok en
+                <span className="font-semibold text-foreground">{initialQuota.tiktok.current}</span> brouillon(s) TikTok en
                 attente sur 24 h — il vous en reste{" "}
-                <span className="font-medium">{initialQuota.tiktok.remaining}</span> sur{" "}
+                <span className="font-semibold text-foreground">{initialQuota.tiktok.remaining}</span> sur{" "}
                 {initialQuota.tiktok.max}.
                 {tiktokInBatch > 0 && (
                   <>
                     {" "}
-                    Ce lot en ajoute <span className="font-medium">{tiktokInBatch}</span>.
+                    Ce lot en ajoute <span className="font-semibold text-foreground">{tiktokInBatch}</span>.
                   </>
                 )}
               </p>
@@ -513,13 +517,13 @@ export function BulkComposer({
 
       {/* Bandeaux de résultat global */}
       {blockedMessage && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <p className="font-medium">Lot non programmé</p>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
+          <p className="font-semibold">Lot non programmé</p>
           <p>{blockedMessage}</p>
         </div>
       )}
       {igWarning && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-700 dark:text-amber-400">
           {igWarning}
         </div>
       )}

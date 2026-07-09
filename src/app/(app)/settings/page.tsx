@@ -12,23 +12,25 @@ export default async function SettingsPage() {
     <div className="space-y-6">
       <PageHeader title="Paramètres" description="Profil, fuseau horaire et notifications." />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Profil</CardTitle>
+      <Card className="max-w-md gap-0 py-0">
+        <CardHeader className="border-b border-border py-0">
+          <CardTitle className="px-0.5 py-3 text-[13.5px]">Profil</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="py-3.5">
           <ProfileForm name={user.name} email={user.email} timezone={user.timezone} />
         </CardContent>
       </Card>
 
-      <Card className="max-w-md">
-        <CardHeader>
-          <CardTitle className="text-base">Notifications Telegram</CardTitle>
-          <CardDescription>
+      <Card className="max-w-md gap-0 py-0">
+        <CardHeader className="border-b border-border py-0">
+          <CardTitle className="px-0.5 py-3 text-[13.5px]">Notifications Telegram</CardTitle>
+        </CardHeader>
+        <CardContent className="py-3.5">
+          <CardDescription className="text-[12.5px]">
             Les alertes d'échec de publication sont envoyées via un bot Telegram configuré au niveau du serveur
             (variables d'environnement <code>TELEGRAM_BOT_TOKEN</code> et <code>TELEGRAM_CHAT_ID</code>).
           </CardDescription>
-        </CardHeader>
+        </CardContent>
       </Card>
     </div>
   );

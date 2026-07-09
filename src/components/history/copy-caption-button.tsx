@@ -43,7 +43,7 @@ export function CopyCaptionButton({
         e.stopPropagation();
         handleCopy();
       }}
-      className={cn(copied && "text-primary")}
+      className={cn("text-[12.5px]", copied && "text-primary")}
     >
       {copied ? (
         <>

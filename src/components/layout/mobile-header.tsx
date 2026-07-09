@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/sheet";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { UserMenu } from "@/components/layout/user-menu";
+import { BrandMark } from "@/components/layout/brand-mark";
 
 /**
  * En-tête mobile sticky (<lg) : pastille de marque + bouton hamburger
@@ -35,13 +36,12 @@ export function MobileHeader({
         >
           <Menu className="size-5" />
         </Button>
-        <SheetContent side="left" className="max-w-64 p-0">
+        <SheetContent side="left" className="max-w-56 p-0">
           <SheetHeader className="sr-only">
             <SheetTitle>Menu de navigation</SheetTitle>
           </SheetHeader>
-          <div className="flex h-14 items-center gap-2 border-b px-4">
-            <span className="bg-brand-gradient size-6 shrink-0 rounded-md" aria-hidden="true" />
-            <span className="text-base font-semibold">Social Master</span>
+          <div className="flex h-14 items-center border-b px-4">
+            <BrandMark />
           </div>
           <div className="flex-1 overflow-y-auto">
             <SidebarNav onNavigate={() => setOpen(false)} />
@@ -49,8 +49,7 @@ export function MobileHeader({
           {user && <UserMenu name={user.name} email={user.email} />}
         </SheetContent>
       </Sheet>
-      <span className="bg-brand-gradient size-6 shrink-0 rounded-md" aria-hidden="true" />
-      <span className="text-base font-semibold">Social Master</span>
+      <BrandMark />
     </header>
   );
 }

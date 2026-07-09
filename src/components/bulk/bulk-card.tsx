@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
 
 /** État d'une carte vidéo dans le lot. Piloté par le parent (BulkComposer). */
@@ -89,7 +89,7 @@ export function BulkCard({
       <CardContent className="space-y-4">
         {/* En-tête carte : miniature + nom (toujours visibles pour ne jamais confondre deux vidéos) */}
         <div className="flex items-start gap-3">
-          <div className="relative flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted">
+          <div className="relative flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
             {card.thumbnailUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={card.thumbnailUrl} alt="" className="size-full object-cover" />
@@ -106,21 +106,21 @@ export function BulkCard({
             </span>
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium" title={card.name}>
+            <p className="truncate text-[13.5px] font-semibold" title={card.name}>
               {card.name}
             </p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[11.5px] text-muted-foreground">
               {card.isVideo ? "Vidéo" : "Image"}
             </p>
             {isScheduled && (
-              <Badge variant="secondary" className="mt-1 gap-1 text-primary">
+              <StatusBadge tone="scheduled" className="mt-1 gap-1">
                 <Check className="size-3" /> Programmé
-              </Badge>
+              </StatusBadge>
             )}
             {isFailed && (
-              <Badge variant="destructive" className="mt-1">
+              <StatusBadge tone="err" className="mt-1">
                 Échec
-              </Badge>
+              </StatusBadge>
             )}
           </div>
           {!locked && (
@@ -137,11 +137,11 @@ export function BulkCard({
         </div>
 
         {isScheduled ? (
-          <div className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-sm">
+          <div className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-[13.5px]">
             <span className="text-muted-foreground">Cette vidéo est programmée.</span>
             <Link
               href={`/composer/${card.result.status === "scheduled" ? card.result.postId : ""}`}
-              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+              className="inline-flex items-center gap-1 font-semibold text-primary underline-offset-4 hover:underline"
             >
               Voir le post <ExternalLink className="size-3.5" />
             </Link>
@@ -157,9 +157,11 @@ export function BulkCard({
             {/* Légende + bouton Copier (utile en mode brouillon TikTok) */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor={`caption-${card.key}`}>Légende</Label>
+                <Label htmlFor={`caption-${card.key}`} className="text-xs font-semibold">
+                  Légende
+                </Label>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{card.caption.length}/2200</span>
+                  <span className="text-[11.5px] text-muted-foreground">{card.caption.length}/2200</span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -184,7 +186,9 @@ export function BulkCard({
 
             {/* Hashtags */}
             <div className="space-y-1.5">
-              <Label htmlFor={`hashtags-${card.key}`}>Hashtags</Label>
+              <Label htmlFor={`hashtags-${card.key}`} className="text-xs font-semibold">
+                Hashtags
+              </Label>
               <Input
                 id={`hashtags-${card.key}`}
                 value={card.hashtagsText}
@@ -198,7 +202,9 @@ export function BulkCard({
             {timingMode === "custom" ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label htmlFor={`tiktok-time-${card.key}`}>Heure TikTok</Label>
+                  <Label htmlFor={`tiktok-time-${card.key}`} className="text-xs font-semibold">
+                    Heure TikTok
+                  </Label>
                   <Input
                     id={`tiktok-time-${card.key}`}
                     type="datetime-local"
@@ -208,7 +214,9 @@ export function BulkCard({
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor={`instagram-time-${card.key}`}>Heure Instagram</Label>
+                  <Label htmlFor={`instagram-time-${card.key}`} className="text-xs font-semibold">
+                    Heure Instagram
+                  </Label>
                   <Input
                     id={`instagram-time-${card.key}`}
                     type="datetime-local"
@@ -220,7 +228,9 @@ export function BulkCard({
               </div>
             ) : (
               <div className="space-y-1.5">
-                <Label htmlFor={`date-${card.key}`}>Date et heure de publication</Label>
+                <Label htmlFor={`date-${card.key}`} className="text-xs font-semibold">
+                  Date et heure de publication
+                </Label>
                 <Input
                   id={`date-${card.key}`}
                   type="datetime-local"
@@ -229,7 +239,7 @@ export function BulkCard({
                   onChange={(e) => onChange({ dateTime: e.target.value })}
                 />
                 {timingMode === "offset" && card.platforms.tiktok && card.platforms.instagram && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[11.5px] text-muted-foreground">
                     TikTok à cette heure, Instagram 5 min après.
                   </p>
                 )}
@@ -238,7 +248,7 @@ export function BulkCard({
 
             {/* Plateformes (les deux cochées par défaut, décochables indépendamment) */}
             <div className="space-y-2">
-              <Label>Plateformes</Label>
+              <Label className="text-xs font-semibold">Plateformes</Label>
               <div className="flex flex-wrap gap-4">
                 <div className="flex items-center gap-2">
                   <Checkbox
@@ -249,7 +259,7 @@ export function BulkCard({
                       onChange({ platforms: { ...card.platforms, tiktok: checked === true } })
                     }
                   />
-                  <Label htmlFor={`tiktok-${card.key}`} className="font-normal">
+                  <Label htmlFor={`tiktok-${card.key}`} className="text-[13.5px] font-normal">
                     TikTok{" "}
                     {!tiktokConnected && <span className="text-muted-foreground">(non connecté)</span>}
                   </Label>
@@ -263,7 +273,7 @@ export function BulkCard({
                       onChange({ platforms: { ...card.platforms, instagram: checked === true } })
                     }
                   />
-                  <Label htmlFor={`instagram-${card.key}`} className="font-normal">
+                  <Label htmlFor={`instagram-${card.key}`} className="text-[13.5px] font-normal">
                     Instagram{" "}
                     {!instagramConnected && (
                       <span className="text-muted-foreground">(non connecté)</span>
