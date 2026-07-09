@@ -19,6 +19,7 @@ type MediaAssetSummary = {
   height: number | null;
   durationSec: number | null;
   status: string;
+  thumbnailKey?: string | null;
 };
 
 function formatSize(bytes: number): string {
@@ -45,7 +46,16 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
     <Card className="overflow-hidden py-0">
       <div className="flex aspect-square items-center justify-center bg-muted">
         {isVideo ? (
-          <FileVideo className="size-10 text-muted-foreground" />
+          asset.thumbnailKey ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={getPublicMediaUrl(asset.thumbnailKey)}
+              alt=""
+              className="size-full object-cover"
+            />
+          ) : (
+            <FileVideo className="size-10 text-muted-foreground" />
+          )
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
