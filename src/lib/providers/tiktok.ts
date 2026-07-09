@@ -157,28 +157,33 @@ export async function fetchTikTokCreatorInfo(accessToken: string): Promise<TikTo
 // ---------------------------------------------------------------------------
 
 const MAX_CHUNK_BYTES = 64 * 1024 * 1024;
-const MIN_CHUNK_BYTES = 5 * 1024 * 1024;
-const MAX_LAST_CHUNK_BYTES = 128 * 1024 * 1024;
 
+/**
+ * Découpe un fichier pour l'upload TikTok FILE_UPLOAD.
+ *
+ * ⚠️ TikTok impose un modèle STRICT (vérifié empiriquement le 09/07/2026 : tout écart → `invalid_param`
+ * « TikTok a refusé les paramètres ») : `chunk_size` ∈ [5 Mo, 64 Mo] et surtout
+ * **`total_chunk_count = plancher(video_size / chunk_size)`**. Les (count − 1) premiers chunks font
+ * EXACTEMENT `chunk_size` (64 Mo ici) ; le DERNIER absorbe tout le reste — il pèse donc entre 64 Mo et
+ * < 128 Mo (jamais un petit reliquat séparé). Un fichier ≤ 64 Mo tient en un seul chunk = sa taille.
+ *
+ * Le nombre de segments retournés est exactement ce `total_chunk_count`. NE PAS revenir à un découpage
+ * « naïf » (64 Mo + reste) : pour un fichier de 100 Mo il produirait 2 chunks alors que TikTok en attend
+ * 1 (plancher(100/64)=1), ce qui faisait échouer toutes les vidéos > 64 Mo dont la taille ne tombait pas
+ * pile sur un multiple.
+ */
 export function computeChunkRanges(totalSize: number): Array<{ start: number; end: number }> {
   if (totalSize <= MAX_CHUNK_BYTES) {
     return [{ start: 0, end: totalSize - 1 }];
   }
 
+  const count = Math.floor(totalSize / MAX_CHUNK_BYTES);
   const ranges: Array<{ start: number; end: number }> = [];
-  let offset = 0;
-  while (totalSize - offset > MAX_CHUNK_BYTES) {
-    const remaining = totalSize - offset;
-    // Si le morceau restant après ce chunk serait trop petit (< 5 Mo), on l'absorbe
-    // dans ce chunk plutôt que de créer un dernier chunk sous la taille minimale.
-    if (remaining - MAX_CHUNK_BYTES < MIN_CHUNK_BYTES && remaining <= MAX_LAST_CHUNK_BYTES) {
-      ranges.push({ start: offset, end: totalSize - 1 });
-      return ranges;
-    }
-    ranges.push({ start: offset, end: offset + MAX_CHUNK_BYTES - 1 });
-    offset += MAX_CHUNK_BYTES;
+  for (let i = 0; i < count - 1; i++) {
+    ranges.push({ start: i * MAX_CHUNK_BYTES, end: (i + 1) * MAX_CHUNK_BYTES - 1 });
   }
-  ranges.push({ start: offset, end: totalSize - 1 });
+  // Dernier chunk : du début de son segment jusqu'à la fin du fichier (absorbe le reste).
+  ranges.push({ start: (count - 1) * MAX_CHUNK_BYTES, end: totalSize - 1 });
   return ranges;
 }
 
@@ -273,7 +278,9 @@ export async function publishTikTokDraftVideo(
   maxWaitMs = 5 * 60 * 1000
 ): Promise<void> {
   const ranges = computeChunkRanges(videoSizeBytes);
-  const chunkSize = ranges.length === 1 ? videoSizeBytes : MAX_CHUNK_BYTES;
+  // chunk_size déclaré : la taille du fichier s'il tient en un chunk (≤ 64 Mo), sinon 64 Mo — JAMAIS
+  // la taille réelle d'un gros fichier mono-chunk (ex. 100 Mo), qui dépasserait le plafond de 64 Mo.
+  const chunkSize = videoSizeBytes <= MAX_CHUNK_BYTES ? videoSizeBytes : MAX_CHUNK_BYTES;
 
   const { publish_id, upload_url } = await initInboxVideoUpload(accessToken, videoSizeBytes, chunkSize, ranges.length);
   await uploadVideoToTikTok(upload_url, storageKey, videoSizeBytes);
