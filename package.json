@@ -10,8 +10,9 @@
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "sh scripts/test.sh",
+    "test:watch": "vitest",
+    "test:vitest": "vitest run"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1081.0",
