@@ -62,6 +62,11 @@ async function processTarget(postTargetId: string): Promise<void> {
             const media = orderedMedia[0];
             const isImage = target.contentType === "IMAGE" || (target.contentType === "STORY" && !media.mimeType.startsWith("video/"));
             const key = isImage ? await ensureJpegVersion(media.storageKey, media.mimeType) : media.storageKey;
+            // Frame de couverture choisie dans le composer (Reel uniquement), stockée en JSON.
+            const coverTimeMs =
+              target.contentType === "REEL"
+                ? (target.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs
+                : undefined;
             return publishInstagramMedia({
               igUserId: target.socialAccount.platformAccountId,
               accessToken,
@@ -69,6 +74,7 @@ async function processTarget(postTargetId: string): Promise<void> {
               mediaType: target.contentType === "REEL" ? "REELS" : target.contentType === "STORY" ? "STORIES" : "IMAGE",
               mediaUrl: getPublicMediaUrl(key),
               isVideo: media.mimeType.startsWith("video/"),
+              thumbOffsetMs: coverTimeMs ?? undefined,
             });
           })();
 

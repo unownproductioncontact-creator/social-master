@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { FileVideo } from "lucide-react";
@@ -46,6 +46,7 @@ export function PostComposerForm({
     targetInstagram: boolean;
     targetInstagramStory: boolean;
     targetTiktok: boolean;
+    instagramCoverTimeMs?: number | null;
   };
 }) {
   const router = useRouter();
@@ -58,6 +59,7 @@ export function PostComposerForm({
   const [targetInstagram, setTargetInstagram] = useState(initialPost?.targetInstagram ?? instagramConnected);
   const [targetInstagramStory, setTargetInstagramStory] = useState(initialPost?.targetInstagramStory ?? false);
   const [targetTiktok, setTargetTiktok] = useState(initialPost?.targetTiktok ?? false);
+  const [coverTimeMs, setCoverTimeMs] = useState<number | null>(initialPost?.instagramCoverTimeMs ?? null);
 
   const selectedMedia = useMemo(
     () => mediaAssetIds.map((id) => mediaOptions.find((m) => m.id === id)).filter((m): m is MediaOption => Boolean(m)),
@@ -90,6 +92,7 @@ export function PostComposerForm({
         targetInstagram,
         targetInstagramStory,
         targetTiktok,
+        instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
       });
       if (result.error) {
         toast.error(result.error);
@@ -233,6 +236,15 @@ export function PostComposerForm({
           </div>
         </div>
 
+        {targetInstagram && igContentType === "REEL" && selectedMedia[0]?.isVideo && (
+          <CoverFramePicker
+            key={selectedMedia[0].id}
+            videoUrl={selectedMedia[0].url}
+            valueMs={coverTimeMs}
+            onChange={setCoverTimeMs}
+          />
+        )}
+
         <Button onClick={handleSave} disabled={isPending || mediaAssetIds.length === 0} className="w-full sm:w-auto">
           {isPending ? "Enregistrement…" : "Enregistrer le brouillon"}
         </Button>
@@ -251,6 +263,71 @@ export function PostComposerForm({
             <PreviewMock media={selectedMedia[0] ?? null} extraCount={selectedMedia.length - 1} caption={fullCaption} />
           </TabsContent>
         </Tabs>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sélecteur de la frame de couverture d'un Reel Instagram (thumb_offset). L'utilisateur scrube la
+ * vidéo ; la frame choisie (en ms) servira de couverture — la même seconde peut être choisie sur
+ * TikTok au moment de finaliser pour une couverture identique sur les deux plateformes.
+ */
+function CoverFramePicker({
+  videoUrl,
+  valueMs,
+  onChange,
+}: {
+  videoUrl: string;
+  valueMs: number | null;
+  onChange: (ms: number) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [duration, setDuration] = useState(0);
+
+  function handleLoadedMetadata() {
+    const v = videoRef.current;
+    if (!v) return;
+    setDuration(v.duration || 0);
+    v.currentTime = valueMs != null ? Math.min(valueMs / 1000, v.duration || 0) : 0;
+  }
+
+  function handleSeek(seconds: number) {
+    const v = videoRef.current;
+    if (v) v.currentTime = seconds;
+    onChange(Math.round(seconds * 1000));
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-3">
+      <Label className="text-xs font-semibold">Couverture du Reel</Label>
+      <div className="flex gap-3">
+        <video
+          ref={videoRef}
+          src={videoUrl}
+          muted
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={handleLoadedMetadata}
+          className="aspect-9/16 w-20 shrink-0 rounded-md bg-muted object-cover"
+        />
+        <div className="flex-1 space-y-1.5">
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={valueMs != null ? valueMs / 1000 : 0}
+            onChange={(e) => handleSeek(Number(e.target.value))}
+            disabled={duration === 0}
+            className="w-full accent-primary"
+            aria-label="Position de la frame de couverture"
+          />
+          <p className="text-[11.5px] text-muted-foreground">
+            Frame à <span className="font-semibold tabular-nums">{((valueMs ?? 0) / 1000).toFixed(1)} s</span>
+            {duration > 0 && ` / ${duration.toFixed(1)} s`} — choisissez la même seconde sur TikTok pour une couverture identique.
+          </p>
+        </div>
       </div>
     </div>
   );

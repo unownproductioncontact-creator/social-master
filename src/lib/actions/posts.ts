@@ -18,6 +18,8 @@ const SavePostSchema = z.object({
   targetInstagram: z.boolean().default(false),
   targetInstagramStory: z.boolean().default(false),
   targetTiktok: z.boolean().default(false),
+  // Reel Instagram : frame de couverture en ms (thumb_offset). Ignoré hors REEL.
+  instagramCoverTimeMs: z.number().int().min(0).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -115,6 +117,11 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
           contentType: igContentType,
           publishMode: "AUTO",
           status: "PENDING",
+          // Frame de couverture uniquement pertinente pour un Reel vidéo.
+          platformOptions:
+            igContentType === "REEL" && data.instagramCoverTimeMs != null
+              ? { coverTimeMs: Math.round(data.instagramCoverTimeMs) }
+              : {},
         },
       });
     }

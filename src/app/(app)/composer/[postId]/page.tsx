@@ -74,6 +74,9 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             targetInstagram: post.postTargets.some((t) => t.platform === "INSTAGRAM"),
             targetInstagramStory: post.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
             targetTiktok: post.postTargets.some((t) => t.platform === "TIKTOK"),
+            instagramCoverTimeMs:
+              (post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions as { coverTimeMs?: number } | null)
+                ?.coverTimeMs ?? null,
           }}
         />
       ) : (

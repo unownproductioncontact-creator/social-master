@@ -165,6 +165,7 @@ type CreateContainerParams = {
   mediaType: "REELS" | "IMAGE" | "STORIES";
   mediaUrl: string; // video_url pour REELS/STORIES vidéo, image_url pour IMAGE/STORIES image
   isVideo?: boolean; // requis pour distinguer une Story image d'une Story vidéo
+  thumbOffsetMs?: number; // Reel : frame de couverture (thumb_offset, en ms depuis le début de la vidéo)
 };
 
 async function graphFetch(path: string, accessToken: string, params: Record<string, string>, method: "GET" | "POST" = "GET") {
@@ -187,6 +188,10 @@ export async function createMediaContainer(params: CreateContainerParams): Promi
   let body: Record<string, string>;
   if (params.mediaType === "REELS") {
     body = { media_type: "REELS", video_url: params.mediaUrl, caption: params.caption };
+    // Couverture du Reel : frame à `thumbOffsetMs` ms (choisie dans le composer pour matcher TikTok).
+    if (params.thumbOffsetMs != null && params.thumbOffsetMs >= 0) {
+      body.thumb_offset = String(Math.round(params.thumbOffsetMs));
+    }
   } else if (params.mediaType === "STORIES") {
     // Pas de `caption` sur une Story : l'API Instagram ne rend aucune légende texte sur les Stories
     // (l'envoyer serait silencieusement ignoré, et pourrait être rejeté si Meta durcit la validation).
