@@ -86,7 +86,7 @@ export function SchedulePanel({
                 onChange={(e) => setDateTime(e.target.value)}
               />
             </div>
-            <Button onClick={handleSchedule} disabled={isPending || !dateTime || !canSchedule}>
+            <Button onClick={handleSchedule} disabled={isPending || !dateTime || !canSchedule} className="w-full sm:w-auto">
               {isPending ? "Programmation…" : "Programmer"}
             </Button>
             {!canSchedule && (
@@ -131,7 +131,7 @@ export function SchedulePanel({
                 </div>
               )}
             </div>
-            <Button variant="ghost" size="sm" onClick={handleUnschedule} disabled={isPending}>
+            <Button variant="ghost" size="sm" onClick={handleUnschedule} disabled={isPending} className="w-full sm:w-auto">
               {postStatus === "SCHEDULED" ? "Annuler la programmation" : "Repasser en brouillon pour corriger"}
             </Button>
           </div>

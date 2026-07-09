@@ -8,7 +8,7 @@ export default function LibraryLoading() {
         <Skeleton className="h-4 w-80" />
       </div>
       <Skeleton className="h-24 w-full rounded-xl" />
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
         {Array.from({ length: 10 }).map((_, i) => (
           <Skeleton key={i} className="aspect-square w-full rounded-xl" />
         ))}

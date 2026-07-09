@@ -117,7 +117,7 @@ export function PostComposerForm({
               Aucun média disponible. Importez-en un dans la Médiathèque.
             </p>
           ) : (
-            <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
               {mediaOptions.map((media) => {
                 const position = mediaAssetIds.indexOf(media.id);
                 const isSelected = position !== -1;
@@ -227,7 +227,7 @@ export function PostComposerForm({
           </div>
         </div>
 
-        <Button onClick={handleSave} disabled={isPending || mediaAssetIds.length === 0}>
+        <Button onClick={handleSave} disabled={isPending || mediaAssetIds.length === 0} className="w-full sm:w-auto">
           {isPending ? "Enregistrement…" : "Enregistrer le brouillon"}
         </Button>
       </div>
