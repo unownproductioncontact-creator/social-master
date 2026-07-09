@@ -115,7 +115,14 @@ async function processTarget(postTargetId: string): Promise<void> {
   await recomputePostStatus(target.postId);
 }
 
-async function markFailure(postTargetId: string, idempotencyKey: string, isTerminal: boolean, code: string, message: string) {
+async function markFailure(
+  postTargetId: string,
+  idempotencyKey: string,
+  isTerminal: boolean,
+  code: string,
+  message: string,
+  rawError: string
+) {
   await db.postTarget.update({
     where: { id: postTargetId },
     data: { status: isTerminal ? "FAILED" : "PROCESSING", errorCode: code, errorMessage: message },
@@ -140,11 +147,17 @@ async function markFailure(postTargetId: string, idempotencyKey: string, isTermi
           entityType: "PostTarget",
           entityId: postTargetId,
           action: `${target.platform.toLowerCase()}_publish_failed`,
-          detail: { code, message, postId: target.postId },
+          // Règle d'ingénierie §6.9 : on journalise l'erreur API BRUTE (code/subcode/fbtrace Meta),
+          // indispensable pour diagnostiquer un 1er run réel ; l'UI n'affiche que `message` (FR).
+          detail: { code, message, rawError, postId: target.postId },
         },
       });
     }
     await notifyTelegram(`⚠️ Publication échouée (${code})\n${message}`);
+  } else {
+    // Échec transitoire (retry en cours) : pas d'ActivityLog utilisateur, mais on trace côté serveur
+    // pour ne pas perdre la cause des tentatives intermédiaires.
+    console.error(`[publish-job] échec transitoire ${code} sur target ${postTargetId} : ${rawError}`);
   }
 }
 
@@ -161,12 +174,13 @@ export async function handlePublishBatch(
     await db.publishJob.update({ where: { idempotencyKey }, data: { state: "COMPLETED" } }).catch(() => {});
     return [{ id: job.id, status: "completed" }];
   } catch (err) {
+    const rawError = err instanceof Error ? err.message : String(err);
     const target = await db.postTarget.findUnique({ where: { id: postTargetId } });
     const classified =
       target?.platform === "TIKTOK" ? classifyTikTokError(err) : classifyInstagramError(err);
 
     const isTerminal = classified.errorClass !== "transient" || isLastAttempt;
-    await markFailure(postTargetId, idempotencyKey, isTerminal, classified.code, classified.message);
+    await markFailure(postTargetId, idempotencyKey, isTerminal, classified.code, classified.message, rawError);
 
     return [{ id: job.id, status: isTerminal ? "deadletter" : "failed" }];
   }

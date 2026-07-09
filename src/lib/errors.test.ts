@@ -2,46 +2,79 @@ import { describe, it, expect } from "vitest";
 import { classifyInstagramError, classifyTikTokError, needsReauth } from "@/lib/errors";
 
 describe("classifyInstagramError", () => {
-  it("classe une erreur de container non prêt comme transitoire", () => {
-    const result = classifyInstagramError(new Error("Container Instagram en échec : (9007)"));
-    expect(result.errorClass).toBe("transient");
-    expect(result.code).toBe("ig_not_ready");
+  // Reproduit le vrai message levé par graphFetch : "... (${status}): ${corps JSON brut Meta}".
+  const igError = (code: number, subcode?: number, fbtrace = "A1b2C3d4") =>
+    new Error(
+      `Graph API Instagram échouée (400): {"error":{"message":"boom","code":${code}` +
+        (subcode != null ? `,"error_subcode":${subcode}` : "") +
+        `,"fbtrace_id":"${fbtrace}"}}`
+    );
+
+  it("média pas prêt (9007/2207027) → transitoire", () => {
+    const r = classifyInstagramError(igError(9007, 2207027));
+    expect(r.errorClass).toBe("transient");
+    expect(r.code).toBe("ig_not_ready");
   });
 
-  it("classe un quota atteint comme account_issue", () => {
-    const result = classifyInstagramError(new Error("code 2207042 quota"));
-    expect(result.errorClass).toBe("account_issue");
-    expect(result.code).toBe("ig_quota");
+  it("quota (9/2207042) → account_issue", () => {
+    const r = classifyInstagramError(igError(9, 2207042));
+    expect(r.errorClass).toBe("account_issue");
+    expect(r.code).toBe("ig_quota");
   });
 
-  it("classe un token invalide (190) comme account_issue nécessitant une reconnexion", () => {
-    const result = classifyInstagramError(new Error("OAuthException code 190 Invalid access token"));
-    expect(result.errorClass).toBe("account_issue");
-    expect(result.code).toBe("ig_token_invalid");
-    expect(needsReauth(result.code)).toBe(true);
+  it("token invalide (190) → account_issue + reconnexion", () => {
+    const r = classifyInstagramError(igError(190, 463));
+    expect(r.errorClass).toBe("account_issue");
+    expect(r.code).toBe("ig_token_invalid");
+    expect(needsReauth(r.code)).toBe(true);
   });
 
-  it("classe un contenu invalide (36000-series) comme content_rejected", () => {
-    const result = classifyInstagramError(new Error("2207004 invalid aspect ratio"));
-    expect(result.errorClass).toBe("content_rejected");
-    expect(result.code).toBe("ig_media_invalid");
+  it("média non conforme (36000/2207004) → content_rejected", () => {
+    const r = classifyInstagramError(igError(36000, 2207004));
+    expect(r.errorClass).toBe("content_rejected");
+    expect(r.code).toBe("ig_media_invalid");
   });
 
-  it("classe un rate limit comme transitoire", () => {
-    const result = classifyInstagramError(new Error("429 Too Many Requests"));
-    expect(result.errorClass).toBe("transient");
-    expect(result.code).toBe("ig_rate_limited");
+  it("spam (4/2207051) → content_rejected (pas un rate-limit pour Instagram)", () => {
+    const r = classifyInstagramError(igError(4, 2207051));
+    expect(r.errorClass).toBe("content_rejected");
+    expect(r.code).toBe("ig_spam_flag");
   });
 
-  it("retombe sur transient/ig_unknown pour une erreur non reconnue", () => {
-    const result = classifyInstagramError(new Error("something completely unexpected"));
-    expect(result.errorClass).toBe("transient");
-    expect(result.code).toBe("ig_unknown");
+  it("rate-limit app-level (17) → transitoire", () => {
+    const r = classifyInstagramError(igError(17));
+    expect(r.errorClass).toBe("transient");
+    expect(r.code).toBe("ig_rate_limited");
   });
 
-  it("gère une valeur qui n'est pas une instance d'Error", () => {
-    const result = classifyInstagramError("just a string with 190 in it");
-    expect(result.code).toBe("ig_token_invalid");
+  // RÉGRESSION du bug audité le 09/07 : des chiffres présents dans le fbtrace_id (chaîne opaque) ne
+  // doivent JAMAIS déclencher une classification. Ici code=-1 (transitoire) mais fbtrace contient 190/458.
+  it("chiffres 190/458 dans le fbtrace_id → NE déclenche PAS ig_token_invalid", () => {
+    const r = classifyInstagramError(igError(-1, undefined, "A190x458Z"));
+    expect(r.code).toBe("ig_unknown");
+    expect(r.errorClass).toBe("transient");
+  });
+
+  it("marqueur interne container ERROR → content_rejected (pas de retry)", () => {
+    const r = classifyInstagramError(new Error("ig_container_error: le conteneur a échoué"));
+    expect(r.errorClass).toBe("content_rejected");
+    expect(r.code).toBe("ig_media_invalid");
+  });
+
+  it("marqueurs internes container EXPIRED / timeout → transitoire", () => {
+    expect(classifyInstagramError(new Error("ig_container_expired: >24h")).errorClass).toBe("transient");
+    expect(classifyInstagramError(new Error("ig_container_timeout: délai dépassé")).errorClass).toBe("transient");
+  });
+
+  it("erreur non reconnue → transient/ig_unknown", () => {
+    const r = classifyInstagramError(new Error("something completely unexpected"));
+    expect(r.errorClass).toBe("transient");
+    expect(r.code).toBe("ig_unknown");
+  });
+
+  it("chaîne sans corps d'erreur structuré → ig_unknown (plus de faux-match sur un 190 nu)", () => {
+    const r = classifyInstagramError("just a string with 190 in it");
+    expect(r.code).toBe("ig_unknown");
   });
 });
 

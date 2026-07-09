@@ -3,7 +3,10 @@ import { appUrl } from "@/lib/app-url";
 
 const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
 const CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token";
-const GRAPH_BASE = "https://graph.instagram.com";
+// Version épinglée : sans /vXX.0, Meta résout vers la version par défaut de l'app (qui évolue et
+// finit dépréciée) → dérives silencieuses dans le temps. AUTHORIZE_URL/CODE_EXCHANGE_URL, eux, ne se
+// versionnent pas (par conception). À faire évoluer volontairement.
+const GRAPH_BASE = "https://graph.instagram.com/v25.0";
 
 // Scopes vérifiés le 07/07/2026 sur developers.facebook.com/docs/instagram-platform
 // (variante "Instagram API with Instagram Login" — aucune Page Facebook requise).
@@ -36,7 +39,7 @@ export function buildInstagramAuthorizeUrl(state: string): string {
 type ShortLivedTokenResponse = {
   access_token: string;
   user_id: string;
-  permissions?: string[];
+  permissions: string[]; // TOUJOURS normalisé en tableau (Meta le renvoie en CSV : "scope_a,scope_b")
 };
 
 /** Échange le code d'autorisation (valide 1h, usage unique) contre un token court (1h). */
@@ -64,7 +67,20 @@ export async function exchangeCodeForShortLivedToken(code: string): Promise<Shor
   const json = await res.json();
   // La réponse peut être `{ data: [{...}] }` ou directement `{...}` selon la doc — on gère les deux formes.
   const payload = Array.isArray(json?.data) ? json.data[0] : json;
-  return payload as ShortLivedTokenResponse;
+  // ⚠️ Meta renvoie `permissions` en CHAÎNE CSV ("instagram_business_basic,..."), pas en tableau. On
+  // normalise ici, sinon Prisma rejette `grantedScopes String[]` (« Expected List, provided String »)
+  // → l'upsert échoue → le compte ne peut JAMAIS se connecter.
+  const rawPerms: unknown = payload?.permissions;
+  const permissions = Array.isArray(rawPerms)
+    ? (rawPerms as string[])
+    : typeof rawPerms === "string"
+      ? rawPerms.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
+  return {
+    access_token: payload.access_token,
+    user_id: String(payload.user_id),
+    permissions,
+  };
 }
 
 type LongLivedTokenResponse = {
@@ -121,7 +137,11 @@ export async function fetchInstagramProfile(accessToken: string): Promise<Instag
     const text = await res.text();
     throw new Error(`Lecture du profil Instagram échouée (${res.status}): ${text}`);
   }
-  return res.json();
+  // GET /me peut renvoyer `{ data: [{...}] }` (forme documentée) ou un objet plat — même déballage
+  // défensif que l'échange de token, sinon profile.user_id/username seraient undefined → upsert rejeté.
+  const json = await res.json();
+  const payload = Array.isArray(json?.data) ? json.data[0] : json;
+  return payload as InstagramProfile;
 }
 
 export function mapInstagramAccountType(
@@ -168,9 +188,10 @@ export async function createMediaContainer(params: CreateContainerParams): Promi
   if (params.mediaType === "REELS") {
     body = { media_type: "REELS", video_url: params.mediaUrl, caption: params.caption };
   } else if (params.mediaType === "STORIES") {
+    // Pas de `caption` sur une Story : l'API Instagram ne rend aucune légende texte sur les Stories
+    // (l'envoyer serait silencieusement ignoré, et pourrait être rejeté si Meta durcit la validation).
     body = {
       media_type: "STORIES",
-      caption: params.caption,
       ...(params.isVideo ? { video_url: params.mediaUrl } : { image_url: params.mediaUrl }),
     };
   } else {
@@ -242,13 +263,22 @@ export async function getContentPublishingLimit(
   const entry = json.data?.[0];
   return {
     quotaUsage: entry?.quota_usage ?? 0,
-    quotaTotal: entry?.config?.quota_total ?? 100,
+    // JAMAIS de plancher optimiste (règle CLAUDE.md §6.5) : si `config.quota_total` est absent, on
+    // retombe sur la valeur documentée la plus basse (25) plutôt que 100, pour rester conservateur.
+    quotaTotal: entry?.config?.quota_total ?? 25,
   };
 }
 
 /**
- * Attend qu'un container atteigne FINISHED (5 min max par défaut). Meta recommande un poll 1/min mais
- * tolère un rythme plus soutenu sur un seul container ; on reste très en dessous de toute limite documentée.
+ * Attend qu'un container atteigne FINISHED (5 min max par défaut). Meta recommande explicitement un
+ * poll **1×/min pour 5 min au maximum** — d'où l'intervalle par défaut de 30 s (2×/min, très en dessous
+ * de la recommandation, mais loin des 12×/min de l'ancien 5 s qui pouvaient déclencher un rate-limit
+ * sur un carrousel multi-vidéos).
+ *
+ * Distingue les issues (finding audit du 09/07) : ERROR = échec de traitement (média non conforme,
+ * PERMANENT → rejet, pas de retry) ; EXPIRED = non publié en 24 h (transitoire, recréer a du sens) ;
+ * timeout de poll = transitoire. On lève des MARQUEURS distincts pour que classifyInstagramError
+ * n'assimile plus un ERROR à un simple « pas prêt » (ce qui provoquait 3 retries inutiles de ~21 min).
  */
 async function waitForContainerReady(
   containerId: string,
@@ -260,20 +290,24 @@ async function waitForContainerReady(
   let status: ContainerStatusCode = "IN_PROGRESS";
   while (status === "IN_PROGRESS") {
     if (Date.now() - start > maxWaitMs) {
-      throw new Error("Délai de traitement Instagram dépassé (2207027 / 9007 timeout)");
+      throw new Error("ig_container_timeout: délai de traitement Instagram dépassé");
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     status = await getContainerStatus(containerId, accessToken);
   }
-  if (status === "ERROR" || status === "EXPIRED") {
-    throw new Error(`Container Instagram en échec : ${status} (2207027)`);
+  // FINISHED / PUBLISHED → OK (on sort). Sinon on qualifie précisément l'échec.
+  if (status === "ERROR") {
+    throw new Error("ig_container_error: le conteneur Instagram a échoué (média probablement non conforme)");
+  }
+  if (status === "EXPIRED") {
+    throw new Error("ig_container_expired: conteneur Instagram expiré (>24h)");
   }
 }
 
 /** Orchestre le flow complet pour un média unique (Reel, image, ou Story) : container → poll → publish → permalink. */
 export async function publishInstagramMedia(
   params: CreateContainerParams,
-  pollIntervalMs = 5000,
+  pollIntervalMs = 30000,
   maxWaitMs = 5 * 60 * 1000
 ): Promise<{ platformPostId: string; platformPostUrl: string | null }> {
   const containerId = await createMediaContainer(params);
@@ -294,7 +328,7 @@ export async function publishInstagramCarousel(
   accessToken: string,
   caption: string,
   items: Array<{ mediaUrl: string; isVideo: boolean }>,
-  pollIntervalMs = 5000,
+  pollIntervalMs = 30000,
   maxWaitMs = 5 * 60 * 1000
 ): Promise<{ platformPostId: string; platformPostUrl: string | null }> {
   if (items.length < 2 || items.length > 10) {
