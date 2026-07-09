@@ -2,6 +2,9 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { MediaUploader } from "@/components/library/media-uploader";
 import { MediaCard } from "@/components/library/media-card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageHeader } from "@/components/layout/page-header";
+import { Images } from "lucide-react";
 
 export default async function LibraryPage() {
   const session = await verifySession();
@@ -13,12 +16,10 @@ export default async function LibraryPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Médiathèque</h1>
-        <p className="text-muted-foreground">
-          Toutes vos images et vidéos importées, avec leur compatibilité par plateforme.
-        </p>
-      </div>
+      <PageHeader
+        title="Médiathèque"
+        description="Toutes vos images et vidéos importées, avec leur compatibilité par plateforme."
+      />
 
       <MediaUploader />
 
@@ -29,7 +30,7 @@ export default async function LibraryPage() {
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Aucun média importé pour l’instant.</p>
+        <EmptyState icon={Images} title="Aucun média importé pour l’instant" />
       )}
     </div>
   );

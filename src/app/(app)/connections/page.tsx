@@ -2,6 +2,7 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { SocialAccountCard } from "@/components/connections/social-account-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { PageHeader } from "@/components/layout/page-header";
 import { CheckCircle2, AlertTriangle } from "lucide-react";
 
 export default async function ConnectionsPage({
@@ -25,10 +26,7 @@ export default async function ConnectionsPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Connexions</h1>
-        <p className="text-muted-foreground">Connectez vos comptes Instagram et TikTok.</p>
-      </div>
+      <PageHeader title="Connexions" description="Connectez vos comptes Instagram et TikTok." />
 
       {feedback && (
         <Alert variant={feedbackIsError ? "destructive" : "default"}>

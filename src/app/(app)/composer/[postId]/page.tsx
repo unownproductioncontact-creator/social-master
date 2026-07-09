@@ -7,6 +7,7 @@ import { SchedulePanel } from "@/components/composer/schedule-panel";
 import { deletePost } from "@/lib/actions/posts";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/layout/page-header";
 
 const POST_STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
@@ -45,28 +46,28 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {isDraft ? "Modifier le brouillon" : "Détail du post"}
-          </h1>
+      <PageHeader
+        title={isDraft ? "Modifier le brouillon" : "Détail du post"}
+        description={
           <Badge variant={post.status === "FAILED" ? "destructive" : "secondary"} className="mt-1">
             {POST_STATUS_LABELS[post.status] ?? post.status}
           </Badge>
-        </div>
-        {isDraft && (
-          <form
-            action={async () => {
-              "use server";
-              await deletePost(post.id);
-            }}
-          >
-            <Button type="submit" variant="ghost" size="sm">
-              Supprimer
-            </Button>
-          </form>
-        )}
-      </div>
+        }
+        actions={
+          isDraft && (
+            <form
+              action={async () => {
+                "use server";
+                await deletePost(post.id);
+              }}
+            >
+              <Button type="submit" variant="ghost" size="sm">
+                Supprimer
+              </Button>
+            </form>
+          )
+        }
+      />
 
       {isDraft ? (
         <PostComposerForm

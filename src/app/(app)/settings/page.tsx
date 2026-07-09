@@ -2,6 +2,7 @@ import { getCurrentUser } from "@/lib/dal";
 import { notFound } from "next/navigation";
 import { ProfileForm } from "@/components/settings/profile-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/page-header";
 
 export default async function SettingsPage() {
   const user = await getCurrentUser();
@@ -9,10 +10,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Paramètres</h1>
-        <p className="text-muted-foreground">Profil, fuseau horaire et notifications.</p>
-      </div>
+      <PageHeader title="Paramètres" description="Profil, fuseau horaire et notifications." />
 
       <Card>
         <CardHeader>

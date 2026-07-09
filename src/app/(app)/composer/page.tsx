@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/page-header";
 
 export default async function ComposerPage() {
   const session = await verifySession();
@@ -27,10 +28,7 @@ export default async function ComposerPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Créer un post</h1>
-        <p className="text-muted-foreground">Média, caption, hashtags et prévisualisation par plateforme.</p>
-      </div>
+      <PageHeader title="Créer un post" description="Média, caption, hashtags et prévisualisation par plateforme." />
 
       <PostComposerForm
         mediaOptions={mediaOptions}

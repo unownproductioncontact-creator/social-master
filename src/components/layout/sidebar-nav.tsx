@@ -38,7 +38,7 @@ export function SidebarNav() {
             className={cn(
               "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
               isActive
-                ? "bg-secondary text-secondary-foreground"
+                ? "bg-accent-strong text-primary-strong"
                 : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
             )}
           >

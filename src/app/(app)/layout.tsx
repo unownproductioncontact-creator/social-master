@@ -8,7 +8,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen">
       <aside className="flex w-64 flex-col border-r bg-muted/20">
-        <div className="flex h-14 items-center border-b px-4">
+        <div className="flex h-14 items-center gap-2 border-b px-4">
+          <span className="bg-brand-gradient size-6 shrink-0 rounded-md" aria-hidden="true" />
           <span className="text-base font-semibold">Social Master</span>
         </div>
         <div className="flex-1 overflow-y-auto">

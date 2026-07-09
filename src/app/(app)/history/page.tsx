@@ -4,6 +4,9 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageHeader } from "@/components/layout/page-header";
+import { History as HistoryIcon } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   PENDING: { label: "En attente", variant: "outline" },
@@ -25,13 +28,10 @@ export default async function HistoryPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Historique</h1>
-        <p className="text-muted-foreground">Toutes les publications et le détail des échecs.</p>
-      </div>
+      <PageHeader title="Historique" description="Toutes les publications et le détail des échecs." />
 
       {targets.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Aucune publication pour l’instant.</p>
+        <EmptyState icon={HistoryIcon} title="Aucune publication pour l’instant" />
       ) : (
         <div className="space-y-2">
           {targets.map((target) => {
