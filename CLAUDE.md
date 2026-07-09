@@ -238,6 +238,9 @@ Corollaire découvert à cette occasion : **aucun média n'est supprimé automat
 
 ## 16. Suite de tests automatisés (Vitest)
 
+**Règle d'exécution locale (établie le 09/07, diagnostic reproductible)** : lancer la suite complète **avec le serveur dev ARRÊTÉ**. Le poller pg-boss du serveur (instrumentation.ts) + le pg-boss des tests sur le même moteur `prisma dev` provoquent des `ECONNRESET`/`Connection terminated unexpectedly` au `beforeAll` de scheduler.test.ts (suite skippée) — y compris sur base fraîchement redémarrée. Serveur arrêté : 96/96 verts de façon stable. Ce n'est PAS un problème applicatif (Supabase en prod = vrai Postgres, un seul process).
+
+
 `npm test` (une fois) / `npm run test:watch` (mode watch). **46 tests, 5 fichiers, tous verts** sur un `prisma dev` fraîchement redémarré.
 
 - **Config** : [vitest.config.ts](vitest.config.ts). Deux points non-standards nécessaires :
