@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { Layers } from "lucide-react";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { Card, CardContent } from "@/components/ui/card";
+import { buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 
 export default async function ComposerPage() {
@@ -28,7 +30,19 @@ export default async function ComposerPage() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Créer un post" description="Média, caption, hashtags et prévisualisation par plateforme." />
+      <PageHeader
+        title="Créer un post"
+        description="Média, caption, hashtags et prévisualisation par plateforme."
+        actions={
+          <Link
+            href="/composer/bulk"
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <Layers />
+            Publication en masse
+          </Link>
+        }
+      />
 
       <PostComposerForm
         mediaOptions={mediaOptions}

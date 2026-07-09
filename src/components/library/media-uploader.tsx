@@ -270,7 +270,15 @@ function UploadRow({
   );
 }
 
-export function MediaUploader() {
+/** Média fraîchement importé, remonté via la prop `onUploaded` (voir MediaUploader). */
+export type UploadedMedia = {
+  mediaAssetId: string;
+  fileName: string;
+  mimeType: string;
+  isVideo: boolean;
+};
+
+export function MediaUploader({ onUploaded }: { onUploaded?: (media: UploadedMedia) => void } = {}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const router = useRouter();
@@ -281,6 +289,12 @@ export function MediaUploader() {
   }
   const [items, setItems] = useState<UploadItem<File, { mediaAssetId: string }>[]>([]);
   const previousDoneCount = useRef(0);
+  // Les ids déjà notifiés via `onUploaded` — on ne notifie chaque média qu'une seule fois.
+  const notifiedIds = useRef<Set<string>>(new Set());
+  // On garde la dernière référence du callback sans le mettre en dépendance de l'effet (le parent
+  // peut le recréer à chaque rendu) : ça évite de re-souscrire la queue à chaque rendu parent.
+  const onUploadedRef = useRef(onUploaded);
+  onUploadedRef.current = onUploaded;
 
   useEffect(() => {
     const queue = queueRef.current!;
@@ -291,6 +305,23 @@ export function MediaUploader() {
         router.refresh();
       }
       previousDoneCount.current = doneCount;
+
+      // Notifie le parent pour chaque item terminé pas encore signalé (mode masse). Best-effort :
+      // sans `onUploaded`, la Médiathèque fonctionne exactement comme avant (rétrocompatible).
+      const notify = onUploadedRef.current;
+      if (notify) {
+        for (const item of next) {
+          if (item.state === "done" && item.result && !notifiedIds.current.has(item.id)) {
+            notifiedIds.current.add(item.id);
+            notify({
+              mediaAssetId: item.result.mediaAssetId,
+              fileName: item.file.name,
+              mimeType: item.file.type,
+              isVideo: item.file.type.startsWith("video/"),
+            });
+          }
+        }
+      }
     });
     return unsubscribe;
   }, [router]);
