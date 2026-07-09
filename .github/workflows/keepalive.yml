@@ -1,0 +1,37 @@
+name: Keep Render awake (7h–23h Paris)
+
+# Pingue /api/healthz pour empêcher Render d'endormir le service (spin-down après 15 min
+# d'inactivité sur le plan gratuit) — mais UNIQUEMENT en journée. Le service dort ainsi de
+# 23h à 7h (heure de Paris), ce qui économise ~240 h-instance/mois sur le quota gratuit
+# partagé du compte Render. Remplace le keep-alive UptimeRobot (à mettre en pause).
+#
+# ⚠️ NE RIEN PROGRAMMER ENTRE 23h ET 7h : un post prévu dans ce créneau ne partirait qu'au
+#    réveil (~7h). Réveil à froid ~30–60 s → caler les posts du matin à 7h10+.
+#
+# Fenêtre cron en UTC : 05:00–21:59 = 07:00–23:59 Paris en été (CEST, UTC+2).
+# En hiver (CET, UTC+1) elle glisse à 06:00–22:59 Paris — sans impact (pas de publi la nuit).
+# GitHub peut retarder/sauter des exécutions cron aux heures de pointe : keep-alive best-effort,
+# amplement suffisant (le poller pg-boss + la réconciliation rattrapent tout écart au réveil).
+
+on:
+  schedule:
+    - cron: "*/5 5-21 * * *"
+  workflow_dispatch: {} # bouton « Run workflow » dans l'onglet Actions pour tester à la demande
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+permissions: {} # aucun droit sur le repo nécessaire, on ne fait qu'un appel HTTP sortant
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/healthz
+        run: |
+          echo "Ping $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 12 --max-time 30 \
+            https://social-master-jitq.onrender.com/api/healthz
+          echo ""
+          echo "OK"
