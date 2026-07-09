@@ -5,7 +5,9 @@ const PUBLIC_ROUTES = ["/login", "/register", "/legal/privacy", "/legal/terms"];
 
 export default async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;
-  const isPublicRoute = PUBLIC_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
+  // La page d'accueil publique (`/` exactement — pas `startsWith`, sinon tout deviendrait public) présente
+  // le produit et les liens légaux, exigée pour la revue TikTok « site web complet, pas une page de login ».
+  const isPublicRoute = path === "/" || PUBLIC_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
 
   const cookie = req.cookies.get("session")?.value;
   const session = await decryptSession(cookie);
