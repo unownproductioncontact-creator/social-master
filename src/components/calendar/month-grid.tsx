@@ -22,12 +22,48 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   FAILED: "destructive",
 };
 
+const PLATFORM_LABELS: Record<string, string> = {
+  INSTAGRAM: "Instagram",
+  TIKTOK: "TikTok",
+};
+
+type CalendarTarget = {
+  id: string;
+  platform: string;
+  scheduledAt: Date;
+};
+
 type CalendarPost = {
   id: string;
   caption: string;
   status: string;
   scheduledAt: Date;
+  targets: CalendarTarget[];
 };
+
+// Horaire le plus tôt et le plus tard parmi les cibles d'un post (fallback sur Post.scheduledAt
+// si le post n'a aucune cible, cas théorique seulement).
+function targetSpan(post: CalendarPost): { earliest: Date; latest: Date } {
+  if (post.targets.length === 0) return { earliest: post.scheduledAt, latest: post.scheduledAt };
+  const times = post.targets.map((t) => t.scheduledAt.getTime());
+  return { earliest: new Date(Math.min(...times)), latest: new Date(Math.max(...times)) };
+}
+
+// Libellé compact de l'horaire à afficher sur un chip de post : une heure unique si toutes les
+// cibles partagent le même horaire (à la minute près), sinon chaque horaire par cible séparé par "/"
+// (ex. "18:00/18:05" pour TikTok à H et Instagram à H+5min).
+function formatTimeLabel(post: CalendarPost): string {
+  if (post.targets.length === 0) return format(post.scheduledAt, "HH:mm");
+  const uniqueTimes = Array.from(new Set(post.targets.map((t) => format(t.scheduledAt, "HH:mm"))));
+  return uniqueTimes.sort().join("/");
+}
+
+// Détail complet "Plateforme · HH:mm" par cible, pour le tooltip et la vue agenda mobile.
+function targetDetails(post: CalendarPost): string[] {
+  return post.targets.map(
+    (t) => `${PLATFORM_LABELS[t.platform] ?? t.platform} · ${format(t.scheduledAt, "HH:mm")}`
+  );
+}
 
 export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[] }) {
   const monthStart = startOfMonth(month);
@@ -36,12 +72,17 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
   const gridEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
   const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
+  // Regroupement par jour : un post apparaît sur CHAQUE jour où au moins une de ses cibles est
+  // programmée (cas rare mais réel : cibles à cheval sur minuit, ex. 23:58 + 00:03).
   const postsByDay = new Map<string, CalendarPost[]>();
   for (const post of posts) {
-    const key = format(post.scheduledAt, "yyyy-MM-dd");
-    const existing = postsByDay.get(key) ?? [];
-    existing.push(post);
-    postsByDay.set(key, existing);
+    const { earliest, latest } = targetSpan(post);
+    const dayKeys = new Set([format(earliest, "yyyy-MM-dd"), format(latest, "yyyy-MM-dd")]);
+    for (const key of dayKeys) {
+      const existing = postsByDay.get(key) ?? [];
+      existing.push(post);
+      postsByDay.set(key, existing);
+    }
   }
 
   // Sous md : vue agenda verticale, seulement les jours du mois ayant des posts.
@@ -75,13 +116,20 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
                 </div>
                 <div className="space-y-1 p-2">
                   {dayPosts.map((post) => (
-                    <Link key={post.id} href={`/composer/${post.id}`}>
+                    <Link key={post.id} href={`/composer/${post.id}`} className="block">
                       <Badge
                         variant={STATUS_VARIANT[post.status] ?? "outline"}
+                        title={targetDetails(post).join(" · ")}
                         className="block w-full truncate text-left font-normal"
                       >
-                        {format(post.scheduledAt, "HH:mm")} · {post.caption || "(sans légende)"}
+                        <span className="tabular-nums">{formatTimeLabel(post)}</span> ·{" "}
+                        {post.caption || "(sans légende)"}
                       </Badge>
+                      {post.targets.length > 1 && (
+                        <p className="mt-0.5 truncate pl-1 text-[11px] text-muted-foreground">
+                          {targetDetails(post).join(" · ")}
+                        </p>
+                      )}
                     </Link>
                   ))}
                 </div>
@@ -124,9 +172,11 @@ export function MonthGrid({ month, posts }: { month: Date; posts: CalendarPost[]
                     <Link key={post.id} href={`/composer/${post.id}`}>
                       <Badge
                         variant={STATUS_VARIANT[post.status] ?? "outline"}
+                        title={targetDetails(post).join(" · ")}
                         className="block w-full truncate text-left font-normal"
                       >
-                        {format(post.scheduledAt, "HH:mm")} · {post.caption || "(sans légende)"}
+                        <span className="tabular-nums">{formatTimeLabel(post)}</span> ·{" "}
+                        {post.caption || "(sans légende)"}
                       </Badge>
                     </Link>
                   ))}

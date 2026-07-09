@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { addMonths, startOfMonth, endOfMonth, format, parse, isValid } from "date-fns";
+import { addMonths, addDays, startOfMonth, endOfMonth, format, parse, isValid } from "date-fns";
 import { fr } from "date-fns/locale";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
@@ -24,18 +24,33 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
   const rangeStart = startOfMonth(month);
   const rangeEnd = endOfMonth(month);
 
+  // Post.scheduledAt (référence de tri/filtre) reste la borne de requête, mais une cible individuelle
+  // peut légèrement déborder sur le jour suivant/précédent (ex. 23:58 + 00:03) — on élargit donc d'1
+  // jour de chaque côté pour ne pas manquer un post dont le Post.scheduledAt est hors mois affiché de
+  // justesse à cause de ce décalage, puis MonthGrid n'affichera de toute façon que les jours du mois.
   const posts = await db.post.findMany({
     where: {
       userId: session.userId,
-      scheduledAt: { gte: rangeStart, lte: rangeEnd },
+      scheduledAt: { gte: addDays(rangeStart, -1), lte: addDays(rangeEnd, 1) },
       status: { not: "DRAFT" },
     },
+    include: { postTargets: true },
     orderBy: { scheduledAt: "asc" },
   });
 
   const calendarPosts = posts
     .filter((p) => p.scheduledAt != null)
-    .map((p) => ({ id: p.id, caption: p.caption, status: p.status, scheduledAt: p.scheduledAt! }));
+    .map((p) => ({
+      id: p.id,
+      caption: p.caption,
+      status: p.status,
+      scheduledAt: p.scheduledAt!,
+      targets: p.postTargets.map((t) => ({
+        id: t.id,
+        platform: t.platform,
+        scheduledAt: t.scheduledAt ?? p.scheduledAt!,
+      })),
+    }));
 
   const prevMonth = format(addMonths(month, -1), "yyyy-MM");
   const nextMonth = format(addMonths(month, 1), "yyyy-MM");
