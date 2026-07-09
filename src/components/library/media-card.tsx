@@ -91,7 +91,7 @@ export function MediaCard({
           title="Supprimer ce média ?"
           description={
             inUseCount > 0
-              ? `Ce média est utilisé par ${inUseCount} post${inUseCount > 1 ? "s" : ""}. ${inUseCount > 1 ? "Ces posts seront" : "Ce post sera"} dé-programmé${inUseCount > 1 ? "s" : ""} et supprimé${inUseCount > 1 ? "s" : ""}, puis le fichier sera définitivement supprimé de votre stockage. Le contenu déjà publié sur les plateformes n’est pas affecté.`
+              ? `Ce média est utilisé par ${inUseCount} post${inUseCount > 1 ? "s" : ""}. Les brouillons et posts programmés concernés seront dé-programmés et supprimés ; les posts déjà publiés restent dans votre historique (le média y est simplement détaché). Le fichier sera ensuite définitivement supprimé de votre stockage.`
               : "Le fichier sera définitivement supprimé de votre stockage. Cette action est irréversible."
           }
           confirmLabel={inUseCount > 0 ? "Dé-programmer et supprimer" : "Supprimer"}

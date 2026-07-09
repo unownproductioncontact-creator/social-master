@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "@/lib/db";
 import { schedulePost, unschedulePost } from "@/lib/scheduler";
+import { deleteMediaAssetForUser } from "@/lib/media-delete";
 import { getBoss, PUBLISH_QUEUE } from "@/worker/boss";
 import { encryptToken } from "@/lib/crypto";
 
@@ -267,5 +268,108 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     expect(igAfter.scheduledAt).toBeNull();
 
     await db.post.delete({ where: { id: dualPostId } });
+  });
+});
+
+describe("deleteMediaAssetForUser (suppression média EN CASCADE, intégration DB + pg-boss)", () => {
+  it("média sur un BROUILLON : supprime le post et le média (sans pg-boss)", async () => {
+    const media = await db.mediaAsset.create({
+      data: { userId, storageKey: "media/vitest/cascade-draft.jpg", mimeType: "image/jpeg", sizeBytes: 500, status: "READY" },
+    });
+    const post = await db.post.create({ data: { userId, caption: "Cascade brouillon", status: "DRAFT" } });
+    await db.postMedia.create({ data: { postId: post.id, mediaAssetId: media.id, position: 0 } });
+    const target = await db.postTarget.create({
+      data: { postId: post.id, socialAccountId, platform: "INSTAGRAM", contentType: "IMAGE", status: "PENDING" },
+    });
+
+    const res = await deleteMediaAssetForUser(userId, media.id);
+    expect(res.error).toBeUndefined();
+
+    // Post, cible, lien média et média : tout a disparu (cascade Prisma pour les 3 premiers).
+    expect(await db.post.findUnique({ where: { id: post.id } })).toBeNull();
+    expect(await db.postTarget.findUnique({ where: { id: target.id } })).toBeNull();
+    expect(await db.postMedia.count({ where: { mediaAssetId: media.id } })).toBe(0);
+    expect(await db.mediaAsset.findUnique({ where: { id: media.id } })).toBeNull();
+  });
+
+  it("média sur un post PROGRAMMÉ : dé-programme (annule le PublishJob), supprime post + média", async () => {
+    const media = await db.mediaAsset.create({
+      data: { userId, storageKey: "media/vitest/cascade-sched.jpg", mimeType: "image/jpeg", sizeBytes: 500, status: "READY" },
+    });
+    const post = await db.post.create({ data: { userId, caption: "Cascade programmé", status: "DRAFT" } });
+    await db.postMedia.create({ data: { postId: post.id, mediaAssetId: media.id, position: 0 } });
+    const target = await db.postTarget.create({
+      data: { postId: post.id, socialAccountId, platform: "INSTAGRAM", contentType: "IMAGE", status: "PENDING" },
+    });
+
+    const scheduledAt = new Date(Date.now() + 10 * 60 * 1000);
+    const sched = await scheduleWithRetry(post.id, scheduledAt, "Europe/Paris");
+    if (sched.error && KNOWN_LOCAL_ENGINE_QUIRK.test(sched.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation connue du moteur prisma dev local (cascade programmée) — non concluant ici.");
+      await db.mediaAsset.delete({ where: { id: media.id } }).catch(() => {});
+      await db.post.delete({ where: { id: post.id } }).catch(() => {});
+      return;
+    }
+    expect(sched.error).toBeUndefined();
+
+    // Pré-condition : le post est SCHEDULED et un PublishJob WAITING existe.
+    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).status).toBe("SCHEDULED");
+    expect(await db.publishJob.count({ where: { postTargetId: target.id } })).toBe(1);
+
+    const res = await deleteMediaAssetForUser(userId, media.id);
+    expect(res.error).toBeUndefined();
+
+    // Le job a été annulé et tout a disparu.
+    expect(await db.post.findUnique({ where: { id: post.id } })).toBeNull();
+    expect(await db.publishJob.count({ where: { postTargetId: target.id } })).toBe(0);
+    expect(await db.mediaAsset.findUnique({ where: { id: media.id } })).toBeNull();
+  });
+
+  it("média sur un post PUBLIÉ : CONSERVE le post (historique), détache seulement le média", async () => {
+    const media = await db.mediaAsset.create({
+      data: { userId, storageKey: "media/vitest/cascade-pub.jpg", mimeType: "image/jpeg", sizeBytes: 500, status: "READY" },
+    });
+    const post = await db.post.create({
+      data: { userId, caption: "Cascade publié", status: "PUBLISHED", scheduledAt: new Date(Date.now() - 3600_000) },
+    });
+    await db.postMedia.create({ data: { postId: post.id, mediaAssetId: media.id, position: 0 } });
+    const target = await db.postTarget.create({
+      data: {
+        postId: post.id,
+        socialAccountId,
+        platform: "INSTAGRAM",
+        contentType: "IMAGE",
+        status: "PUBLISHED",
+        platformPostId: "ig-hist-123",
+        platformPostUrl: "https://instagram.com/p/hist",
+        publishedAt: new Date(Date.now() - 3600_000),
+      },
+    });
+
+    const res = await deleteMediaAssetForUser(userId, media.id);
+    expect(res.error).toBeUndefined();
+
+    // Le post publié et sa cible (avec platformPostId/URL) SURVIVENT — l'historique est préservé.
+    const stillThere = await db.post.findUnique({ where: { id: post.id } });
+    expect(stillThere).not.toBeNull();
+    expect(stillThere!.status).toBe("PUBLISHED");
+    const targetAfter = await db.postTarget.findUnique({ where: { id: target.id } });
+    expect(targetAfter?.platformPostId).toBe("ig-hist-123");
+    // Le média, lui, a bien disparu et le lien PostMedia a été détaché par cascade.
+    expect(await db.mediaAsset.findUnique({ where: { id: media.id } })).toBeNull();
+    expect(await db.postMedia.count({ where: { postId: post.id } })).toBe(0);
+
+    await db.post.delete({ where: { id: post.id } });
+  });
+
+  it("média introuvable ou d'un autre utilisateur : renvoie une erreur, ne supprime rien", async () => {
+    const res = await deleteMediaAssetForUser(userId, "media-inexistant-xyz");
+    expect(res.error).toBeTruthy();
+    // Scoping : un média existant mais d'un autre userId est traité comme introuvable.
+    const foreign = await deleteMediaAssetForUser("un-autre-user", mediaAssetId);
+    expect(foreign.error).toBeTruthy();
+    // Le média partagé n'a pas été supprimé.
+    expect(await db.mediaAsset.findUnique({ where: { id: mediaAssetId } })).not.toBeNull();
   });
 });

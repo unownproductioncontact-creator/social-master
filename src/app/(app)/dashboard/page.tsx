@@ -54,8 +54,15 @@ export default async function DashboardPage() {
   const dayKey = (d: Date) => formatInTimeZone(d, timezone, "yyyy-MM-dd");
   const todayKey = dayKey(now);
   // Lundi de la semaine locale courante : jour de la semaine ISO (1=lundi … 7=dimanche).
+  // Ancré sur la DATE CIVILE locale (todayKey) convertie en minuit UTC, puis recul de (isoDow-1)
+  // jours UTC (toujours 24 h) : robuste aux bascules d'heure d'été (soustraire des multiples plats
+  // de 24 h à l'instant absolu `now` pouvait faire basculer la date à ±1 h de minuit un jour de DST).
   const isoDow = Number(formatInTimeZone(now, timezone, "i"));
-  const mondayKey = dayKey(new Date(now.getTime() - (isoDow - 1) * 24 * 3600 * 1000));
+  const mondayKey = formatInTimeZone(
+    new Date(parseISO(`${todayKey}T00:00:00Z`).getTime() - (isoDow - 1) * 24 * 3600 * 1000),
+    "UTC",
+    "yyyy-MM-dd"
+  );
   const mediaInclude = {
     postMedia: {
       include: { mediaAsset: { select: { storageKey: true, mimeType: true, thumbnailKey: true } } },
