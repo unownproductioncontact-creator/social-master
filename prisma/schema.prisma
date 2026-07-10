@@ -10,6 +10,7 @@ datasource db {
 enum Platform {
   INSTAGRAM
   TIKTOK
+  YOUTUBE
 }
 
 enum SocialAccountType {
@@ -45,6 +46,7 @@ enum PostContentType {
   STORY
   TIKTOK_VIDEO
   TIKTOK_PHOTO
+  YOUTUBE_SHORT
 }
 
 enum PublishMode {

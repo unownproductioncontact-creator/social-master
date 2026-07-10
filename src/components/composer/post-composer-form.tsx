@@ -19,7 +19,7 @@ import { computeInstagramContentType, computeTikTokContentType } from "@/lib/con
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
-type ServedPlatform = "INSTAGRAM" | "TIKTOK";
+type ServedPlatform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE";
 
 type MediaOption = {
   id: string;
