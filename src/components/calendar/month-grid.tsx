@@ -10,8 +10,10 @@ import {
 } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import { fr } from "date-fns/locale";
+import { Plus } from "lucide-react";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
 import { PlatformChip, platformLabel } from "@/components/ui/platform-chip";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const WEEKDAY_LABELS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
@@ -57,6 +59,16 @@ function targetDetails(post: CalendarPost, timezone: string): string[] {
   );
 }
 
+// Classes du petit lien "+" de création rapide, partagées entre la grille desktop (masqué sauf
+// survol) et l'agenda mobile (toujours visible, pas de survol tactile).
+function createLinkClassName(alwaysVisible: boolean): string {
+  return cn(
+    buttonVariants({ variant: "ghost", size: "icon-xs" }),
+    "shrink-0 text-muted-foreground",
+    !alwaysVisible && "opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+  );
+}
+
 export function MonthGrid({
   month,
   posts,
@@ -90,11 +102,12 @@ export function MonthGrid({
     }
   }
 
-  // Sous md : vue agenda verticale, seulement les jours du mois ayant des posts.
+  // Sous md : vue agenda verticale. Un jour du mois y apparaît s'il a des posts, ou s'il reste
+  // créable (non passé, aujourd'hui inclus) pour y exposer le "+" de création rapide (P3-6c).
   const agendaDays = days
     .filter((day) => isSameMonth(day, month))
     .map((day) => ({ day, key: format(day, "yyyy-MM-dd") }))
-    .filter(({ key }) => (postsByDay.get(key) ?? []).length > 0);
+    .filter(({ key }) => (postsByDay.get(key) ?? []).length > 0 || key >= todayKey);
 
   return (
     <>
@@ -106,6 +119,7 @@ export function MonthGrid({
         ) : (
           agendaDays.map(({ day, key }) => {
             const dayPosts = postsByDay.get(key) ?? [];
+            const canCreate = key >= todayKey;
             return (
               <div key={key} className="overflow-hidden rounded-lg border border-border bg-card">
                 <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5 text-[13.5px] font-semibold">
@@ -118,48 +132,59 @@ export function MonthGrid({
                     {format(day, "d")}
                   </span>
                   <span className="capitalize">{format(day, "EEEE d MMMM", { locale: fr })}</span>
+                  {canCreate && (
+                    <Link
+                      href={`/composer?date=${key}`}
+                      aria-label={`Créer un post le ${format(day, "d MMMM yyyy", { locale: fr })}`}
+                      className={cn(createLinkClassName(true), "ml-auto")}
+                    >
+                      <Plus className="size-3.5" />
+                    </Link>
+                  )}
                 </div>
-                <div className="space-y-1.5 p-2.5">
-                  {dayPosts.map((post) => {
-                    const isFailed = post.status === "FAILED";
-                    return (
-                      <Link
-                        key={post.id}
-                        href={`/composer/${post.id}`}
-                        className="block rounded-md border border-border p-2 text-[13px] hover:bg-muted/50"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-medium">
-                            {isFailed && (
-                              <span
-                                aria-hidden="true"
-                                className="mr-1.5 inline-block size-[5px] rounded-full bg-destructive align-middle"
-                              />
-                            )}
-                            {post.caption || "(sans légende)"}
-                          </span>
-                          <StatusBadge tone={postStatusTone(post.status)} className="shrink-0">
-                            {postStatusLabel(post.status)}
-                          </StatusBadge>
-                        </div>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {post.targets.map((target) => (
-                            <PlatformChip
-                              key={target.id}
-                              platform={target.platform}
-                              time={formatInTimeZone(target.scheduledAt, timezone, "HH:mm")}
-                            />
-                          ))}
-                          {post.targets.length === 0 && (
-                            <span className="tabular-nums text-[11.5px] text-muted-foreground">
-                              {formatTimeLabel(post, timezone)}
+                {dayPosts.length > 0 && (
+                  <div className="space-y-1.5 p-2.5">
+                    {dayPosts.map((post) => {
+                      const isFailed = post.status === "FAILED";
+                      return (
+                        <Link
+                          key={post.id}
+                          href={`/composer/${post.id}`}
+                          className="block rounded-md border border-border p-2 text-[13px] hover:bg-muted/50"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate font-medium">
+                              {isFailed && (
+                                <span
+                                  aria-hidden="true"
+                                  className="mr-1.5 inline-block size-[5px] rounded-full bg-destructive align-middle"
+                                />
+                              )}
+                              {post.caption || "(sans légende)"}
                             </span>
-                          )}
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
+                            <StatusBadge tone={postStatusTone(post.status)} className="shrink-0">
+                              {postStatusLabel(post.status)}
+                            </StatusBadge>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {post.targets.map((target) => (
+                              <PlatformChip
+                                key={target.id}
+                                platform={target.platform}
+                                time={formatInTimeZone(target.scheduledAt, timezone, "HH:mm")}
+                              />
+                            ))}
+                            {post.targets.length === 0 && (
+                              <span className="tabular-nums text-[11.5px] text-muted-foreground">
+                                {formatTimeLabel(post, timezone)}
+                              </span>
+                            )}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })
@@ -179,22 +204,34 @@ export function MonthGrid({
             const key = format(day, "yyyy-MM-dd");
             const dayPosts = postsByDay.get(key) ?? [];
             const inMonth = isSameMonth(day, month);
+            const canCreate = inMonth && key >= todayKey;
             return (
               <div
                 key={key}
                 className={cn(
-                  "min-h-24 border-b border-r border-border p-1.5 last:border-r-0",
+                  "group min-h-24 border-b border-r border-border p-1.5 last:border-r-0",
                   !inMonth && "bg-muted/30 text-muted-foreground"
                 )}
               >
-                <div
-                  className={cn(
-                    "mb-1 inline-flex size-6 items-center justify-center rounded-lg text-xs tabular-nums text-muted-foreground",
-                    !inMonth && "opacity-50",
-                    key === todayKey && "bg-primary-strong font-bold text-primary-foreground opacity-100"
+                <div className="mb-1 flex items-center justify-between gap-1">
+                  <span
+                    className={cn(
+                      "inline-flex size-6 items-center justify-center rounded-lg text-xs tabular-nums text-muted-foreground",
+                      !inMonth && "opacity-50",
+                      key === todayKey && "bg-primary-strong font-bold text-primary-foreground opacity-100"
+                    )}
+                  >
+                    {format(day, "d")}
+                  </span>
+                  {canCreate && (
+                    <Link
+                      href={`/composer?date=${key}`}
+                      aria-label={`Créer un post le ${format(day, "d MMMM yyyy", { locale: fr })}`}
+                      className={createLinkClassName(false)}
+                    >
+                      <Plus className="size-3.5" />
+                    </Link>
                   )}
-                >
-                  {format(day, "d")}
                 </div>
                 <div className="space-y-1">
                   {dayPosts.map((post) => {

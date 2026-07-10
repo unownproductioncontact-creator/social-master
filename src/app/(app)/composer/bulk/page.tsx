@@ -1,4 +1,4 @@
-import { verifySession } from "@/lib/dal";
+import { verifySession, getCurrentUser } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { getBulkQuotaInfo } from "@/lib/actions/bulk-info";
@@ -25,6 +25,8 @@ function displayNameFromStorageKey(storageKey: string): string {
 
 export default async function BulkComposerPage() {
   const session = await verifySession();
+  const user = await getCurrentUser();
+  const timezone = user?.timezone ?? "Europe/Paris";
 
   const [mediaAssets, accounts, quota] = await Promise.all([
     db.mediaAsset.findMany({
@@ -59,6 +61,7 @@ export default async function BulkComposerPage() {
         instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
         tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
         initialQuota={quota}
+        timezone={timezone}
       />
     </div>
   );

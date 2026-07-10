@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { FileVideo, ImageIcon, Copy, Check, X, ExternalLink } from "lucide-react";
+import { FileVideo, ImageIcon, Copy, Check, X, ExternalLink, Moon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
+import { suggestWakeTime } from "@/lib/schedule-window";
+import { localToDate, dateToLocal, cardQuietWindowFields, type TimedField } from "@/lib/bulk-ui";
 
 /** État d'une carte vidéo dans le lot. Piloté par le parent (BulkComposer). */
 export type BulkCardState = {
@@ -29,6 +31,13 @@ export type BulkCardState = {
   /** Horaires par plateforme (mode custom uniquement), chaînes datetime-local. */
   tiktokTime: string;
   instagramTime: string;
+  /**
+   * Vrai dès que l'utilisateur a édité un horaire de CETTE carte directement (saisie manuelle ou
+   * correctif « → 7h10 »). Protège la carte d'un écrasement silencieux quand « Heure de départ »
+   * change ensuite (P2-6b) — remis à `false` par « Espacer les vidéos », qui écrase tout de toute
+   * façon.
+   */
+  timeTouched: boolean;
   /** Résultat de programmation ; `idle` tant que le lot n'a pas été soumis. */
   result: BulkCardResult;
 };
@@ -40,6 +49,19 @@ export type BulkCardResult =
 
 export type TimingUiMode = "offset" | "simultaneous" | "custom";
 
+/** Petit encart ambre affiché sous un champ horaire tombant dans la fenêtre morte 23h-7h (P1-3). */
+function QuietWindowNotice({ disabled, onFix }: { disabled: boolean; onFix: () => void }) {
+  return (
+    <div className="flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11.5px] text-amber-700 dark:text-amber-400">
+      <Moon className="size-3.5 shrink-0" />
+      <span className="flex-1">Ne partira qu&rsquo;à ~7h05 (service en veille).</span>
+      <Button type="button" variant="outline" size="xs" disabled={disabled} onClick={onFix}>
+        → 7h10
+      </Button>
+    </div>
+  );
+}
+
 export function BulkCard({
   card,
   index,
@@ -47,6 +69,7 @@ export function BulkCard({
   tiktokConnected,
   instagramConnected,
   disabled,
+  timezone,
   onChange,
   onRemove,
 }: {
@@ -56,6 +79,8 @@ export function BulkCard({
   tiktokConnected: boolean;
   instagramConnected: boolean;
   disabled: boolean;
+  /** Fuseau de l'utilisateur (User.timezone, replié sur Europe/Paris) — jamais celui du navigateur/runtime. */
+  timezone: string;
   onChange: (patch: Partial<BulkCardState>) => void;
   onRemove: () => void;
 }) {
@@ -76,6 +101,20 @@ export function BulkCard({
     } catch {
       setCopied(false);
     }
+  }
+
+  // Fenêtre morte 23h-7h (P1-3) : champs horaires de CETTE carte actuellement concernés.
+  const quietFields = isScheduled ? [] : cardQuietWindowFields(card, timingMode, timezone);
+  const quietByField = (field: TimedField["field"]) => quietFields.find((f) => f.field === field);
+
+  /** Applique suggestWakeTime au champ concerné et marque la carte comme éditée manuellement. */
+  function applyWakeTime(target: TimedField) {
+    const current = localToDate(target.value, timezone);
+    if (!current) return; // ne devrait pas arriver : le champ vient de cardQuietWindowFields (déjà valide)
+    const nextValue = dateToLocal(suggestWakeTime(current, timezone), timezone);
+    if (target.field === "dateTime") onChange({ dateTime: nextValue, timeTouched: true });
+    else if (target.field === "tiktokTime") onChange({ tiktokTime: nextValue, timeTouched: true });
+    else onChange({ instagramTime: nextValue, timeTouched: true });
   }
 
   return (
@@ -210,8 +249,14 @@ export function BulkCard({
                     type="datetime-local"
                     value={card.tiktokTime}
                     disabled={locked || !card.platforms.tiktok}
-                    onChange={(e) => onChange({ tiktokTime: e.target.value })}
+                    onChange={(e) => onChange({ tiktokTime: e.target.value, timeTouched: true })}
                   />
+                  {quietByField("tiktokTime") && (
+                    <QuietWindowNotice
+                      disabled={locked}
+                      onFix={() => applyWakeTime(quietByField("tiktokTime")!)}
+                    />
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor={`instagram-time-${card.key}`} className="text-xs font-semibold">
@@ -222,8 +267,14 @@ export function BulkCard({
                     type="datetime-local"
                     value={card.instagramTime}
                     disabled={locked || !card.platforms.instagram}
-                    onChange={(e) => onChange({ instagramTime: e.target.value })}
+                    onChange={(e) => onChange({ instagramTime: e.target.value, timeTouched: true })}
                   />
+                  {quietByField("instagramTime") && (
+                    <QuietWindowNotice
+                      disabled={locked}
+                      onFix={() => applyWakeTime(quietByField("instagramTime")!)}
+                    />
+                  )}
                 </div>
               </div>
             ) : (
@@ -236,12 +287,15 @@ export function BulkCard({
                   type="datetime-local"
                   value={card.dateTime}
                   disabled={locked}
-                  onChange={(e) => onChange({ dateTime: e.target.value })}
+                  onChange={(e) => onChange({ dateTime: e.target.value, timeTouched: true })}
                 />
                 {timingMode === "offset" && card.platforms.tiktok && card.platforms.instagram && (
                   <p className="text-[11.5px] text-muted-foreground">
                     TikTok à cette heure, Instagram 5 min après.
                   </p>
+                )}
+                {quietByField("dateTime") && (
+                  <QuietWindowNotice disabled={locked} onFix={() => applyWakeTime(quietByField("dateTime")!)} />
                 )}
               </div>
             )}

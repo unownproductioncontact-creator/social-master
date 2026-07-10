@@ -64,13 +64,21 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
         description="Vue mensuelle de vos publications programmées."
         actions={
           <>
-            <Link href={`/calendar?month=${prevMonth}`} className={buttonVariants({ variant: "outline", size: "icon-sm" })}>
+            <Link
+              href={`/calendar?month=${prevMonth}`}
+              aria-label="Mois précédent"
+              className={buttonVariants({ variant: "outline", size: "icon-sm" })}
+            >
               <ChevronLeft className="size-4" />
             </Link>
             <span className="w-28 text-center text-[13.5px] font-semibold capitalize">
               {format(month, "MMMM yyyy", { locale: fr })}
             </span>
-            <Link href={`/calendar?month=${nextMonth}`} className={buttonVariants({ variant: "outline", size: "icon-sm" })}>
+            <Link
+              href={`/calendar?month=${nextMonth}`}
+              aria-label="Mois suivant"
+              className={buttonVariants({ variant: "outline", size: "icon-sm" })}
+            >
               <ChevronRight className="size-4" />
             </Link>
           </>
@@ -84,6 +92,11 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
           icon={CalendarDays}
           title="Aucune publication programmée ce mois-ci"
           description="Créez un post et programmez-le depuis le composer."
+          action={
+            <Link href="/composer" className={buttonVariants({ size: "sm" })}>
+              Créer un post
+            </Link>
+          }
         />
       )}
     </div>

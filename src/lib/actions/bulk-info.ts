@@ -5,8 +5,13 @@ import { db } from "@/lib/db";
 import {
   checkTikTokDraftCapacity,
   getInstagramQuotaSnapshot,
+  getTikTokDraftEventTimes,
   TIKTOK_MAX_PENDING_DRAFTS_24H,
 } from "@/lib/quota";
+
+/** Fenêtre de récupération des horaires de brouillons TikTok existants (P1-4, voir tiktokEventTimesMs). */
+const TIKTOK_EVENT_TIMES_PAST_MS = 24 * 60 * 60 * 1000;
+const TIKTOK_EVENT_TIMES_FUTURE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Server Action LECTURE SEULE du LOT L5 : pré-affiche l'état des quotas sur la page « Publication en
@@ -27,6 +32,17 @@ export type BulkQuotaInfo = {
     remaining: number;
     /** Plafond documenté TikTok (5). */
     max: number;
+    /**
+     * Horaires (ms epoch) des brouillons TikTok EXISTANTS, sur une fenêtre large (maintenant − 24 h
+     * → maintenant + 30 j) — mêmes filtres que `current`/`remaining` (getTikTokDraftEventTimes),
+     * périmètre juste élargi. Le client (bulk-composer.tsx via bulk-ui.ts) les fusionne avec les
+     * horaires TikTok effectifs des cartes en attente et cherche la fenêtre glissante de 24 h la plus
+     * chargée (maxCountInSlidingWindow) — corrige P1-4 côté aperçu : un lot étalé sur plusieurs jours
+     * n'est plus bloqué à tort par une comparaison au nombre total du lot. Le serveur
+     * (bulk-scheduler.ts::precheckTikTokWindow) reste l'AUTORITÉ finale à la soumission ; ceci n'est
+     * qu'un aperçu, jamais bloquant en lui-même.
+     */
+    tiktokEventTimesMs: number[];
   };
   instagram: {
     /** Quota lu en runtime via content_publishing_limit ; null si compte absent/erreur API. */
@@ -48,6 +64,15 @@ export async function getBulkQuotaInfo(): Promise<BulkQuotaInfo> {
   // scheduler en masse). additionalDrafts = 0 → on veut juste l'état actuel, pas une réservation.
   const capacity = await checkTikTokDraftCapacity({ userId: session.userId }, 0);
 
+  // Horaires bruts sur une fenêtre large : le client s'en sert pour mesurer LUI-MÊME la fenêtre
+  // glissante de 24 h la plus chargée en y ajoutant les horaires des cartes en attente (P1-4).
+  const now = Date.now();
+  const tiktokEventTimesMs = await getTikTokDraftEventTimes(
+    { userId: session.userId },
+    new Date(now - TIKTOK_EVENT_TIMES_PAST_MS),
+    new Date(now + TIKTOK_EVENT_TIMES_FUTURE_MS)
+  );
+
   const igAccount = await db.socialAccount.findFirst({
     where: { userId: session.userId, platform: "INSTAGRAM" },
     select: { id: true },
@@ -60,6 +85,7 @@ export async function getBulkQuotaInfo(): Promise<BulkQuotaInfo> {
       current: capacity.current,
       remaining: capacity.remaining,
       max: TIKTOK_MAX_PENDING_DRAFTS_24H,
+      tiktokEventTimesMs,
     },
     instagram: {
       snapshot: igSnapshot,

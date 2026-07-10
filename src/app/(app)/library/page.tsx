@@ -1,10 +1,8 @@
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
-import { MediaUploader } from "@/components/library/media-uploader";
-import { MediaCard } from "@/components/library/media-card";
-import { EmptyState } from "@/components/ui/empty-state";
-import { PageHeader } from "@/components/layout/page-header";
-import { Images } from "lucide-react";
+import { getPublicMediaUrl } from "@/lib/storage";
+import { MediaLibrary } from "@/components/library/media-library";
+import type { MediaCardData } from "@/components/library/media-card";
 
 export default async function LibraryPage() {
   const session = await verifySession();
@@ -15,24 +13,19 @@ export default async function LibraryPage() {
     orderBy: { createdAt: "desc" },
   });
 
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Médiathèque"
-        description="Toutes vos images et vidéos importées, avec leur compatibilité par plateforme."
-      />
+  // Les URLs publiques sont calculées ici (serveur) car `@/lib/storage` est `server-only` : la carte
+  // cliente ne reçoit que des URLs prêtes, jamais les clés de stockage brutes.
+  const cards: MediaCardData[] = assets.map((asset) => ({
+    id: asset.id,
+    mimeType: asset.mimeType,
+    sizeBytes: asset.sizeBytes,
+    width: asset.width,
+    height: asset.height,
+    durationSec: asset.durationSec,
+    mediaUrl: getPublicMediaUrl(asset.storageKey),
+    thumbnailUrl: asset.thumbnailKey ? getPublicMediaUrl(asset.thumbnailKey) : null,
+    inUseCount: asset._count.postMedia,
+  }));
 
-      <MediaUploader />
-
-      {assets.length > 0 ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {assets.map((asset) => (
-            <MediaCard key={asset.id} asset={asset} inUseCount={asset._count.postMedia} />
-          ))}
-        </div>
-      ) : (
-        <EmptyState icon={Images} title="Aucun média importé pour l’instant" />
-      )}
-    </div>
-  );
+  return <MediaLibrary assets={cards} />;
 }

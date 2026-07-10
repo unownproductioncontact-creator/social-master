@@ -9,6 +9,7 @@ import { recomputePostStatus } from "@/lib/post-status";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { publishTikTokDraftVideo, publishTikTokDraftPhoto } from "@/lib/providers/tiktok";
 import { notifyTelegram } from "@/lib/telegram";
+import { appUrl } from "@/lib/app-url";
 
 type PublishJobData = { postTargetId: string; idempotencyKey: string };
 type JobResult = { id: string; status: "completed" | "failed" | "deadletter" };
@@ -109,6 +110,18 @@ async function processTarget(postTargetId: string): Promise<void> {
     });
   }
 
+  // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
+  // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
+  // (copie en un appui long, zéro navigation) là où TikTok notifie le brouillon. La légende réutilise
+  // EXACTEMENT le `caption` composé plus haut (même format que le bouton « Copier la légende »).
+  // Best-effort : notifyTelegram est un no-op silencieux si non configuré et n'échoue jamais bruyamment.
+  if (target.platform === "TIKTOK") {
+    await notifyTelegram(
+      `📥 Brouillon TikTok déposé — ouvre tes notifications TikTok pour finaliser.\n\n` +
+        `Légende à copier :\n${caption}\n\n${appUrl()}/composer/${target.postId}`
+    );
+  }
+
   await db.activityLog.create({
     data: {
       userId: target.post.userId,
@@ -159,7 +172,10 @@ async function markFailure(
         },
       });
     }
-    await notifyTelegram(`⚠️ Publication échouée (${code})\n${message}`);
+    // P3-6a : lien direct vers le post pour corriger depuis la notif (best-effort ; `target` peut être
+    // null si la cible a disparu entre-temps, auquel cas on omet simplement le lien).
+    const link = target ? `\n\n${appUrl()}/composer/${target.postId}` : "";
+    await notifyTelegram(`⚠️ Publication échouée (${code})\n${message}${link}`);
   } else {
     // Échec transitoire (retry en cours) : pas d'ActivityLog utilisateur, mais on trace côté serveur
     // pour ne pas perdre la cause des tentatives intermédiaires.

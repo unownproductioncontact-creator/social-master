@@ -58,8 +58,11 @@ export function postStatusTone(status: string): StatusTone {
     case "PROCESSING":
       return "warn";
     case "PUBLISHED":
-    case "SENT_TO_INBOX":
       return "ok";
+    case "SENT_TO_INBOX":
+      // Arrivé dans la boîte de réception TikTok : une action manuelle du user reste requise
+      // pour publier réellement — pas un succès complet, d'où l'ambre plutôt que le vert.
+      return "warn";
     case "PARTIALLY_PUBLISHED":
       // succès partiel : ambre pour signaler qu'une action reste possible
       return "warn";
@@ -91,7 +94,7 @@ export function postStatusLabel(status: string): string {
     case "PROCESSING":
       return "En cours";
     case "SENT_TO_INBOX":
-      return "Envoyé en brouillon";
+      return "À finaliser sur TikTok";
     default:
       return status;
   }

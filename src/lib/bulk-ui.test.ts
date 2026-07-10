@@ -9,7 +9,17 @@ import {
   computeSpacedTimes,
   validateCard,
   MIN_LEAD_MS,
+  localToDate,
+  localToMs,
+  localToIso,
+  dateToLocal,
+  effectiveTiktokTimeMs,
+  relevantTimeFields,
+  cardQuietWindowFields,
+  type CardTimeFields,
 } from "@/lib/bulk-ui";
+
+const TZ = "Europe/Paris";
 
 describe("splitHashtags", () => {
   it("découpe sur espaces, virgules et retours ligne", () => {
@@ -235,5 +245,161 @@ describe("validateCard", () => {
         now
       )
     ).toBe("2200 caractères maximum.");
+  });
+});
+
+describe("localToDate / localToMs / localToIso", () => {
+  it("convertit une chaîne datetime-local en instant UTC correct (heure d'été, CEST/UTC+2)", () => {
+    const date = localToDate("2026-07-09T14:30", TZ);
+    expect(date?.toISOString()).toBe("2026-07-09T12:30:00.000Z");
+  });
+
+  it("convertit une chaîne datetime-local en instant UTC correct (heure d'hiver, CET/UTC+1)", () => {
+    const date = localToDate("2026-01-15T23:30", TZ);
+    expect(date?.toISOString()).toBe("2026-01-15T22:30:00.000Z");
+  });
+
+  it("localToMs et localToIso s'accordent avec localToDate", () => {
+    const value = "2026-07-09T14:30";
+    const date = localToDate(value, TZ)!;
+    expect(localToMs(value, TZ)).toBe(date.getTime());
+    expect(localToIso(value, TZ)).toBe(date.toISOString());
+  });
+
+  it("renvoie null/NaN pour une chaîne invalide", () => {
+    expect(localToDate("pas une date", TZ)).toBeNull();
+    expect(localToMs("pas une date", TZ)).toBeNaN();
+    expect(localToIso("pas une date", TZ)).toBeNull();
+    expect(localToDate("2026-02-31T10:00", TZ)).toBeNull();
+  });
+
+  it("un même instant datetime-local donne une conversion différente selon le fuseau", () => {
+    const paris = localToDate("2026-07-09T14:30", "Europe/Paris")!;
+    const tokyo = localToDate("2026-07-09T14:30", "Asia/Tokyo")!;
+    expect(paris.getTime()).not.toBe(tokyo.getTime());
+  });
+});
+
+describe("dateToLocal", () => {
+  it("formate une Date UTC en chaîne datetime-local murale dans le fuseau donné", () => {
+    expect(dateToLocal(new Date("2026-07-15T21:30:00.000Z"), TZ)).toBe("2026-07-15T23:30");
+  });
+
+  it("fait l'aller-retour avec localToDate", () => {
+    const value = "2026-01-15T08:05";
+    const date = localToDate(value, TZ)!;
+    expect(dateToLocal(date, TZ)).toBe(value);
+  });
+});
+
+describe("effectiveTiktokTimeMs", () => {
+  const base: CardTimeFields = {
+    platforms: { tiktok: true, instagram: true },
+    dateTime: "2026-07-09T10:00",
+    tiktokTime: "2026-07-09T09:00",
+    instagramTime: "2026-07-09T11:00",
+  };
+
+  it("mode offset : utilise dateTime (horaire de base)", () => {
+    expect(effectiveTiktokTimeMs(base, "offset", TZ)).toBe(localToMs("2026-07-09T10:00", TZ));
+  });
+
+  it("mode simultané : utilise dateTime aussi", () => {
+    expect(effectiveTiktokTimeMs(base, "simultaneous", TZ)).toBe(localToMs("2026-07-09T10:00", TZ));
+  });
+
+  it("mode custom : utilise tiktokTime (pas dateTime)", () => {
+    expect(effectiveTiktokTimeMs(base, "custom", TZ)).toBe(localToMs("2026-07-09T09:00", TZ));
+  });
+
+  it("renvoie null si la carte ne cible pas TikTok", () => {
+    const card: CardTimeFields = { ...base, platforms: { tiktok: false, instagram: true } };
+    expect(effectiveTiktokTimeMs(card, "offset", TZ)).toBeNull();
+  });
+
+  it("renvoie null si l'horaire pertinent est invalide/vide", () => {
+    const card: CardTimeFields = { ...base, tiktokTime: "" };
+    expect(effectiveTiktokTimeMs(card, "custom", TZ)).toBeNull();
+  });
+});
+
+describe("relevantTimeFields", () => {
+  const base: CardTimeFields = {
+    platforms: { tiktok: true, instagram: true },
+    dateTime: "2026-07-09T10:00",
+    tiktokTime: "2026-07-09T09:00",
+    instagramTime: "2026-07-09T11:00",
+  };
+
+  it("offset/simultané : un seul champ partagé (dateTime) si au moins une plateforme est cochée", () => {
+    expect(relevantTimeFields(base, "offset")).toEqual([{ field: "dateTime", value: "2026-07-09T10:00" }]);
+    expect(relevantTimeFields(base, "simultaneous")).toEqual([
+      { field: "dateTime", value: "2026-07-09T10:00" },
+    ]);
+  });
+
+  it("offset : dateTime absent si AUCUNE plateforme n'est cochée", () => {
+    const card: CardTimeFields = { ...base, platforms: { tiktok: false, instagram: false } };
+    expect(relevantTimeFields(card, "offset")).toEqual([]);
+  });
+
+  it("custom : un champ par plateforme cochée", () => {
+    expect(relevantTimeFields(base, "custom")).toEqual([
+      { field: "tiktokTime", value: "2026-07-09T09:00" },
+      { field: "instagramTime", value: "2026-07-09T11:00" },
+    ]);
+  });
+
+  it("custom : seulement le champ de la plateforme cochée", () => {
+    const card: CardTimeFields = { ...base, platforms: { tiktok: true, instagram: false } };
+    expect(relevantTimeFields(card, "custom")).toEqual([
+      { field: "tiktokTime", value: "2026-07-09T09:00" },
+    ]);
+  });
+});
+
+describe("cardQuietWindowFields", () => {
+  it("signale dateTime quand il tombe dans la fenêtre morte (offset/simultané)", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: true, instagram: false },
+      dateTime: "2026-07-15T23:30",
+      tiktokTime: "2026-07-15T23:30",
+      instagramTime: "2026-07-15T23:30",
+    };
+    expect(cardQuietWindowFields(card, "offset", TZ)).toEqual([
+      { field: "dateTime", value: "2026-07-15T23:30" },
+    ]);
+  });
+
+  it("ne signale rien quand l'horaire est hors fenêtre morte", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: true, instagram: true },
+      dateTime: "2026-07-15T10:00",
+      tiktokTime: "2026-07-15T10:00",
+      instagramTime: "2026-07-15T10:00",
+    };
+    expect(cardQuietWindowFields(card, "offset", TZ)).toEqual([]);
+  });
+
+  it("mode custom : ne signale que le champ concerné, pas les deux", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: true, instagram: true },
+      dateTime: "2026-07-15T10:00",
+      tiktokTime: "2026-07-15T02:00",
+      instagramTime: "2026-07-15T10:00",
+    };
+    expect(cardQuietWindowFields(card, "custom", TZ)).toEqual([
+      { field: "tiktokTime", value: "2026-07-15T02:00" },
+    ]);
+  });
+
+  it("un champ invalide n'est jamais signalé", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: true, instagram: false },
+      dateTime: "",
+      tiktokTime: "",
+      instagramTime: "",
+    };
+    expect(cardQuietWindowFields(card, "offset", TZ)).toEqual([]);
   });
 });

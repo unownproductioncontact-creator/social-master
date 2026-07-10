@@ -206,4 +206,18 @@ describe("Quota", () => {
     mockFetch(() => res({ data: [{ quota_usage: 1 }] }));
     expect(await getContentPublishingLimit("ig", "t")).toEqual({ quotaUsage: 1, quotaTotal: 25 });
   });
+
+  it("P2-7a : passe un AbortSignal au fetch quand un timeout est fourni (rétro-compatible sans arg)", async () => {
+    let sawSignal = false;
+    mockFetch((_url, init) => {
+      if (init?.signal instanceof AbortSignal) sawSignal = true;
+      return res({ data: [{ quota_usage: 2, config: { quota_total: 50 } }] });
+    });
+
+    // Timeout explicite (le chemin bulk passe 3000 ms) : la valeur de retour est inchangée…
+    const r = await getContentPublishingLimit("ig", "t", 3000);
+    expect(r).toEqual({ quotaUsage: 2, quotaTotal: 50 });
+    // …et un AbortSignal a bien été fourni au fetch.
+    expect(sawSignal).toBe(true);
+  });
 });

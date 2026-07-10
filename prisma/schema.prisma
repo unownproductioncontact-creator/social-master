@@ -74,6 +74,9 @@ model User {
   passwordHash String
   name         String?
   timezone     String   @default("Europe/Paris")
+  // Purge automatique optionnelle des médias déjà publiés (null = désactivé). Voir
+  // src/lib/media-retention.ts (sélection pure) + src/worker/media-cleanup-job.ts (passe de purge).
+  mediaRetentionDays Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

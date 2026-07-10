@@ -1,10 +1,9 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { fromZonedTime } from "date-fns-tz";
-import { Layers, Info, Plus, Loader2 } from "lucide-react";
+import { Layers, Info, Plus, Loader2, Moon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,13 +19,20 @@ import {
   joinHashtags,
   applyGroupHashtags,
   computeSpacedTimes,
-  isValidDateTimeLocal,
   validateCard,
+  localToIso,
+  localToMs,
+  effectiveTiktokTimeMs,
+  cardQuietWindowFields,
 } from "@/lib/bulk-ui";
+import { maxCountInSlidingWindow, TIKTOK_WINDOW_MS } from "@/lib/tiktok-window";
+import { QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { scheduleManyPostsAction, type ScheduleManyInput } from "@/lib/actions/bulk";
 import type { BulkQuotaInfo } from "@/lib/actions/bulk-info";
+import { getLastUsed, rememberHashtags, truncatePreview } from "@/lib/last-used";
 
-const TIMEZONE = "Europe/Paris";
+/** Clé sessionStorage versionnée (P2-6a) : bump la version (« -v2 », …) si le format change un jour. */
+const BULK_DRAFT_STORAGE_KEY = "bulk-draft-v1";
 
 /** Valeur datetime-local par défaut : dans 1 h, arrondie à la minute. */
 function defaultDateTime(): string {
@@ -55,25 +61,103 @@ function makeCard(
     dateTime: base,
     tiktokTime: base,
     instagramTime: base,
+    timeTouched: false,
     result: { status: "idle" },
   };
 }
 
-/**
- * Convertit une chaîne datetime-local (heure murale dans TIMEZONE) en Date UTC via fromZonedTime,
- * puis en ISO string pour l'action serveur. Renvoie null si la chaîne est invalide.
- */
-function localToIso(value: string): string | null {
-  if (!isValidDateTimeLocal(value)) return null;
-  const utc = fromZonedTime(value, TIMEZONE);
-  if (Number.isNaN(utc.getTime())) return null;
-  return utc.toISOString();
+// -----------------------------------------------------------------------------
+// Persistance sessionStorage du lot en cours de saisie (P2-6a)
+// -----------------------------------------------------------------------------
+//
+// Seules les cartes NON PROGRAMMÉES et les réglages du lot sont persistés (jamais `result` : un
+// succès/échec de soumission ne doit pas survivre à un rechargement). Validation défensive à la
+// lecture (sessionStorage est hors du contrôle de TypeScript) : toute entrée malformée est ignorée
+// plutôt que de faire planter la page.
+
+type PersistedBulkCard = {
+  mediaAssetId: string;
+  name: string;
+  url: string;
+  thumbnailUrl: string | null;
+  isVideo: boolean;
+  caption: string;
+  hashtagsText: string;
+  platforms: { tiktok: boolean; instagram: boolean };
+  dateTime: string;
+  tiktokTime: string;
+  instagramTime: string;
+};
+
+type PersistedBulkDraft = {
+  cards: PersistedBulkCard[];
+  offsetEnabled: boolean;
+  manualMode: "simultaneous" | "custom";
+  groupCaption: string;
+  groupHashtags: string;
+  startTime: string;
+  intervalMinutes: number;
+};
+
+function isPersistedBulkCard(value: unknown): value is PersistedBulkCard {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  const platforms = v.platforms as Record<string, unknown> | undefined;
+  return (
+    typeof v.mediaAssetId === "string" &&
+    typeof v.name === "string" &&
+    typeof v.url === "string" &&
+    (v.thumbnailUrl === null || typeof v.thumbnailUrl === "string") &&
+    typeof v.isVideo === "boolean" &&
+    typeof v.caption === "string" &&
+    typeof v.hashtagsText === "string" &&
+    typeof platforms === "object" &&
+    platforms !== null &&
+    typeof platforms.tiktok === "boolean" &&
+    typeof platforms.instagram === "boolean" &&
+    typeof v.dateTime === "string" &&
+    typeof v.tiktokTime === "string" &&
+    typeof v.instagramTime === "string"
+  );
 }
 
-/** Millisecondes UTC correspondant à une chaîne datetime-local (dans TIMEZONE), ou NaN. */
-function localToMs(value: string): number {
-  const iso = localToIso(value);
-  return iso ? new Date(iso).getTime() : Number.NaN;
+/** Parse défensif d'un brouillon sessionStorage : renvoie null si le JSON est absent/corrompu/hors-forme. */
+function parseBulkDraft(raw: string): PersistedBulkDraft | null {
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if (!data || typeof data !== "object" || !Array.isArray(data.cards)) return null;
+    return {
+      cards: data.cards.filter(isPersistedBulkCard),
+      offsetEnabled: typeof data.offsetEnabled === "boolean" ? data.offsetEnabled : true,
+      manualMode: data.manualMode === "custom" ? "custom" : "simultaneous",
+      groupCaption: typeof data.groupCaption === "string" ? data.groupCaption : "",
+      groupHashtags: typeof data.groupHashtags === "string" ? data.groupHashtags : "",
+      startTime: typeof data.startTime === "string" ? data.startTime : defaultDateTime(),
+      intervalMinutes: typeof data.intervalMinutes === "number" ? data.intervalMinutes : 10,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cardFromPersisted(p: PersistedBulkCard): BulkCardState {
+  cardCounter += 1;
+  return {
+    key: `card-${cardCounter}`,
+    mediaAssetId: p.mediaAssetId,
+    name: p.name,
+    url: p.url,
+    thumbnailUrl: p.thumbnailUrl,
+    isVideo: p.isVideo,
+    caption: p.caption,
+    hashtagsText: p.hashtagsText,
+    platforms: p.platforms,
+    dateTime: p.dateTime,
+    tiktokTime: p.tiktokTime,
+    instagramTime: p.instagramTime,
+    timeTouched: false,
+    result: { status: "idle" },
+  };
 }
 
 export function BulkComposer({
@@ -81,11 +165,14 @@ export function BulkComposer({
   instagramConnected,
   tiktokConnected,
   initialQuota,
+  timezone,
 }: {
   libraryMedia: LibraryMedia[];
   instagramConnected: boolean;
   tiktokConnected: boolean;
   initialQuota: BulkQuotaInfo;
+  /** Fuseau de l'utilisateur (User.timezone, replié sur Europe/Paris — P3-5b). */
+  timezone: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -110,16 +197,121 @@ export function BulkComposer({
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [igWarning, setIgWarning] = useState<string | null>(null);
 
+  // Persistance sessionStorage (P2-6a) ---------------------------------------
+  // `hydrated` ne devient vrai qu'APRÈS la tentative de restauration (voir effet ci-dessous) : tant
+  // qu'il est faux, l'effet de sauvegarde reste inactif — sinon l'état initial (vide) écraserait un
+  // brouillon existant avant même d'avoir pu le lire.
+  const [hydrated, setHydrated] = useState(false);
+  const hasRestoredRef = useRef(false);
+
+  useEffect(() => {
+    if (hasRestoredRef.current) return;
+    hasRestoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem(BULK_DRAFT_STORAGE_KEY);
+      const draft = raw ? parseBulkDraft(raw) : null;
+      if (draft) {
+        const libraryIds = new Set(libraryMedia.map((m) => m.id));
+        const seen = new Set<string>();
+        const restored: BulkCardState[] = [];
+        for (const p of draft.cards) {
+          // Filtre les cartes dont le média a été supprimé depuis, et déduplique par sécurité.
+          if (!libraryIds.has(p.mediaAssetId) || seen.has(p.mediaAssetId)) continue;
+          seen.add(p.mediaAssetId);
+          restored.push(cardFromPersisted(p));
+        }
+        if (restored.length > 0) setCards(restored);
+        setOffsetEnabled(draft.offsetEnabled);
+        setManualMode(draft.manualMode);
+        setGroupCaption(draft.groupCaption);
+        setGroupHashtags(draft.groupHashtags);
+        setStartTime(draft.startTime);
+        setIntervalMinutes(draft.intervalMinutes);
+      }
+    } catch {
+      // sessionStorage indisponible (mode privé strict…) : page vierge, pas bloquant.
+    } finally {
+      setHydrated(true);
+    }
+  }, [libraryMedia]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const pending = cards.filter((c) => c.result.status !== "scheduled");
+    try {
+      if (pending.length === 0) {
+        // Rien à conserver (lot vidé, ou entièrement programmé avec succès) : nettoyage complet.
+        sessionStorage.removeItem(BULK_DRAFT_STORAGE_KEY);
+        return;
+      }
+      const draft: PersistedBulkDraft = {
+        cards: pending.map((c) => ({
+          mediaAssetId: c.mediaAssetId,
+          name: c.name,
+          url: c.url,
+          thumbnailUrl: c.thumbnailUrl,
+          isVideo: c.isVideo,
+          caption: c.caption,
+          hashtagsText: c.hashtagsText,
+          platforms: c.platforms,
+          dateTime: c.dateTime,
+          tiktokTime: c.tiktokTime,
+          instagramTime: c.instagramTime,
+        })),
+        offsetEnabled,
+        manualMode,
+        groupCaption,
+        groupHashtags,
+        startTime,
+        intervalMinutes,
+      };
+      sessionStorage.setItem(BULK_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch {
+      // Quota dépassé / mode privé strict : simple confort perdu, jamais bloquant pour l'utilisateur.
+    }
+  }, [cards, offsetEnabled, manualMode, groupCaption, groupHashtags, startTime, intervalMinutes, hydrated]);
+
+  // Mémoire de saisie (P2-5b) : derniers hashtags mémorisés, lus seulement une fois la tentative de
+  // restauration sessionStorage terminée (`hydrated`) — priorité claire brouillon > mémoire > vide,
+  // cf. `showReuseGroupHashtagsChip` plus bas : si le brouillon a restauré des hashtags communs, le
+  // champ n'est plus vide et la puce ne s'affichera pas. Lire localStorage pendant le rendu initial
+  // casserait aussi l'hydratation (localStorage n'existe pas côté serveur — voir last-used.ts).
+  const [lastUsedHashtags, setLastUsedHashtags] = useState<string | null>(null);
+  useEffect(() => {
+    if (!hydrated) return;
+    const stored = getLastUsed();
+    if (stored?.hashtags) setLastUsedHashtags(stored.hashtags);
+  }, [hydrated]);
+
   const igRemaining = initialQuota.instagram.snapshot
     ? Math.max(0, initialQuota.instagram.snapshot.total - initialQuota.instagram.snapshot.used)
     : null;
 
-  // Nombre de cartes ciblant TikTok (non encore programmées) = brouillons TikTok que ce lot ajoutera.
+  // Nombre de cartes ciblant TikTok/Instagram (non encore programmées) que ce lot ajoutera.
   const pendingCards = cards.filter((c) => c.result.status !== "scheduled");
   const tiktokInBatch = pendingCards.filter((c) => c.platforms.tiktok).length;
   const igInBatch = pendingCards.filter((c) => c.platforms.instagram).length;
-  const tiktokWouldExceed = tiktokInBatch > initialQuota.tiktok.remaining;
+
+  // Compteur TikTok FENÊTRÉ (P1-4) : fusionne les brouillons existants (initialQuota) avec l'horaire
+  // TikTok effectif de chaque carte en attente, puis cherche la fenêtre glissante de 24 h la plus
+  // chargée — comme le pré-check serveur (bulk-scheduler.ts::precheckTikTokWindow), qui reste
+  // l'autorité finale à la soumission. Un lot étalé sur plusieurs jours n'est donc plus bloqué à tort
+  // par une comparaison au nombre total du lot.
+  const newTiktokTimesMs = pendingCards
+    .map((c) => effectiveTiktokTimeMs(c, timingMode, timezone))
+    .filter((ms): ms is number => ms !== null);
+  const tiktokBusiestCount = maxCountInSlidingWindow(
+    [...initialQuota.tiktok.tiktokEventTimesMs, ...newTiktokTimesMs],
+    TIKTOK_WINDOW_MS
+  );
+  const tiktokWouldExceed = tiktokBusiestCount > initialQuota.tiktok.max;
   const igWouldExceed = igRemaining !== null && igInBatch > igRemaining;
+
+  // Avertissement fenêtre morte 23h-7h (P1-3, non bloquant) : cartes en attente ayant au moins un
+  // horaire effectif dans le créneau où le service dort.
+  const quietCardsCount = pendingCards.filter(
+    (c) => cardQuietWindowFields(c, timingMode, timezone).length > 0
+  ).length;
 
   // Mutation d'une carte ----------------------------------------------------
   function patchCard(key: string, patch: Partial<BulkCardState>) {
@@ -147,15 +339,27 @@ export function BulkComposer({
   }
 
   function handleUploaded(media: UploadedMedia) {
-    // Un média fraîchement uploadé n'a pas d'URL d'aperçu résolue côté client (la clé de stockage
-    // reste serveur) : on passe une url vide → la carte affiche l'icône vidéo/image (voir BulkCard).
+    // L'URL publique est résolue côté serveur à la finalisation de l'upload (route /complete) : la
+    // carte affiche donc directement l'aperçu réel au lieu d'une tuile anonyme (voir BulkCard).
     addMedia({
       mediaAssetId: media.mediaAssetId,
       name: media.fileName,
-      url: "",
+      url: media.publicUrl,
       thumbnailUrl: null,
       isVideo: media.isVideo,
     });
+  }
+
+  /** « Heure de départ » (P2-6b) : ne synchronise QUE les cartes en attente pas encore éditées manuellement. */
+  function handleStartTimeChange(value: string) {
+    setStartTime(value);
+    setCards((prev) =>
+      prev.map((c) =>
+        c.result.status === "scheduled" || c.timeTouched
+          ? c
+          : { ...c, dateTime: value, tiktokTime: value, instagramTime: value }
+      )
+    );
   }
 
   // Application groupée -----------------------------------------------------
@@ -202,7 +406,10 @@ export function BulkComposer({
         const t = result.times[i];
         i += 1;
         // En mode custom, on remplit aussi les deux horaires par plateforme avec l'horaire espacé.
-        return { ...c, dateTime: t, tiktokTime: t, instagramTime: t };
+        // « Espacer » écrase TOUT sans condition (contrairement à la sync « Heure de départ ») et
+        // remet timeTouched à false : un futur changement de « Heure de départ » pourra de nouveau
+        // resynchroniser ces cartes tant qu'elles ne sont pas rééditées individuellement.
+        return { ...c, dateTime: t, tiktokTime: t, instagramTime: t, timeTouched: false };
       });
     });
     toast.success("Horaires espacés appliqués.");
@@ -219,26 +426,26 @@ export function BulkComposer({
       let customTimes: { tiktok?: string; instagram?: string } | undefined;
 
       if (timingMode === "custom") {
-        const tkMs = card.platforms.tiktok ? localToMs(card.tiktokTime) : Number.POSITIVE_INFINITY;
-        const igMs = card.platforms.instagram ? localToMs(card.instagramTime) : Number.POSITIVE_INFINITY;
+        const tkMs = card.platforms.tiktok ? localToMs(card.tiktokTime, timezone) : Number.POSITIVE_INFINITY;
+        const igMs = card.platforms.instagram ? localToMs(card.instagramTime, timezone) : Number.POSITIVE_INFINITY;
         const earliest = Math.min(tkMs, igMs);
         baseIso = Number.isFinite(earliest) ? new Date(earliest).toISOString() : null;
         customTimes = {
-          tiktok: card.platforms.tiktok ? localToIso(card.tiktokTime) ?? undefined : undefined,
-          instagram: card.platforms.instagram ? localToIso(card.instagramTime) ?? undefined : undefined,
+          tiktok: card.platforms.tiktok ? localToIso(card.tiktokTime, timezone) ?? undefined : undefined,
+          instagram: card.platforms.instagram ? localToIso(card.instagramTime, timezone) ?? undefined : undefined,
         };
       } else {
-        baseIso = localToIso(card.dateTime);
+        baseIso = localToIso(card.dateTime, timezone);
       }
 
       // Validation client (miroir des règles serveur, marge de 2 min).
       const scheduledMs =
         timingMode === "custom"
           ? Math.min(
-              card.platforms.tiktok ? localToMs(card.tiktokTime) : Number.POSITIVE_INFINITY,
-              card.platforms.instagram ? localToMs(card.instagramTime) : Number.POSITIVE_INFINITY
+              card.platforms.tiktok ? localToMs(card.tiktokTime, timezone) : Number.POSITIVE_INFINITY,
+              card.platforms.instagram ? localToMs(card.instagramTime, timezone) : Number.POSITIVE_INFINITY
             )
-          : localToMs(card.dateTime);
+          : localToMs(card.dateTime, timezone);
 
       const validationError = validateCard(
         {
@@ -321,6 +528,9 @@ export function BulkComposer({
 
       if (result.scheduled > 0) {
         toast.success(`${result.scheduled} publication(s) programmée(s).`);
+        // Mémoire de saisie (P2-5b) : au moins une publication du lot est passée, on retient les
+        // hashtags communs (rememberHashtags ignore déjà une chaîne vide, voir last-used.ts).
+        rememberHashtags(groupHashtags);
       }
       if (result.failed > 0) {
         toast.error(`${result.failed} publication(s) en échec — voir le détail sur les cartes.`);
@@ -336,6 +546,12 @@ export function BulkComposer({
   );
 
   const hasCards = cards.length > 0;
+
+  // Puce « Réutiliser les derniers hashtags » (P2-5b) : seulement une fois la restauration
+  // sessionStorage tentée (`hydrated`, évite un flash), si le champ est ENCORE vide (un brouillon
+  // restauré non vide le remplit déjà — priorité brouillon > mémoire, voir l'effet ci-dessus) et
+  // qu'une mémoire existe.
+  const showReuseGroupHashtagsChip = hydrated && groupHashtags.trim() === "" && Boolean(lastUsedHashtags);
 
   return (
     <div className="space-y-6">
@@ -432,9 +648,22 @@ export function BulkComposer({
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="group-hashtags" className="text-xs font-semibold">
-                  Hashtags communs
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="group-hashtags" className="text-xs font-semibold">
+                    Hashtags communs
+                  </Label>
+                  {showReuseGroupHashtagsChip && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      title={truncatePreview(lastUsedHashtags!)}
+                      onClick={() => setGroupHashtags(lastUsedHashtags!)}
+                    >
+                      Réutiliser les derniers hashtags
+                    </Button>
+                  )}
+                </div>
                 <Input
                   id="group-hashtags"
                   value={groupHashtags}
@@ -460,7 +689,7 @@ export function BulkComposer({
                     id="start-time"
                     type="datetime-local"
                     value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
+                    onChange={(e) => handleStartTimeChange(e.target.value)}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -484,11 +713,9 @@ export function BulkComposer({
 
             {/* (c) Compteur de capacité TikTok + avertissements */}
             <div className="space-y-2 border-t border-border pt-4 text-[12.5px]">
-              <p className={tiktokWouldExceed ? "text-destructive" : "text-muted-foreground"}>
+              <p className="text-muted-foreground">
                 <span className="font-semibold text-foreground">{initialQuota.tiktok.current}</span> brouillon(s) TikTok en
-                attente sur 24 h — il vous en reste{" "}
-                <span className="font-semibold text-foreground">{initialQuota.tiktok.remaining}</span> sur{" "}
-                {initialQuota.tiktok.max}.
+                attente actuellement.
                 {tiktokInBatch > 0 && (
                   <>
                     {" "}
@@ -496,11 +723,16 @@ export function BulkComposer({
                   </>
                 )}
               </p>
+              <p className={tiktokWouldExceed ? "text-destructive" : "text-muted-foreground"}>
+                Journée la plus chargée :{" "}
+                <span className="font-semibold text-foreground">{tiktokBusiestCount}</span> brouillon(s) sur max{" "}
+                {initialQuota.tiktok.max}.
+              </p>
               {tiktokWouldExceed && (
                 <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  Ce lot dépasserait le plafond de {initialQuota.tiktok.max} brouillons TikTok en attente.
-                  Réduisez le nombre de vidéos ciblant TikTok, ou publiez/supprimez des brouillons depuis
-                  l'app TikTok avant de réessayer.
+                  Une journée dépasserait le plafond de {initialQuota.tiktok.max} brouillons TikTok en attente.
+                  Déplacez des vidéos sur un autre jour, réduisez le nombre de vidéos ciblant TikTok, ou
+                  publiez/supprimez des brouillons depuis l'app TikTok avant de réessayer.
                 </p>
               )}
               {initialQuota.instagram.snapshot && (
@@ -540,6 +772,7 @@ export function BulkComposer({
               tiktokConnected={tiktokConnected}
               instagramConnected={instagramConnected}
               disabled={isPending}
+              timezone={timezone}
               onChange={(patch) => patchCard(card.key, patch)}
               onRemove={() => removeCard(card.key)}
             />
@@ -551,6 +784,17 @@ export function BulkComposer({
           title="Ajoutez vos vidéos pour commencer"
           description="Importez plusieurs vidéos ci-dessus ou piochez dans votre médiathèque."
         />
+      )}
+
+      {/* Résumé fenêtre morte 23h-7h (P1-3, non bloquant) — au-dessus de la soumission */}
+      {quietCardsCount > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-700 dark:text-amber-400">
+          <Moon className="mt-0.5 size-4 shrink-0" />
+          <p>
+            {QUIET_WINDOW_LABEL} {quietCardsCount} vidéo{quietCardsCount > 1 ? "s" : ""} de ce lot{" "}
+            {quietCardsCount > 1 ? "sont concernées" : "est concernée"}.
+          </p>
+        </div>
       )}
 
       {/* 4. Soumission */}
@@ -570,7 +814,7 @@ export function BulkComposer({
             )}
           </Button>
           {tiktokWouldExceed && (
-            <span className="text-xs text-destructive">Réduisez les cibles TikTok pour continuer.</span>
+            <span className="text-xs text-destructive">Déplacez des vidéos sur un autre jour pour continuer.</span>
           )}
         </div>
       )}

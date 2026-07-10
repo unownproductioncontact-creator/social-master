@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { formatInTimeZone } from "date-fns-tz";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, Plus } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PlatformChip } from "@/components/ui/platform-chip";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
+import { buttonVariants } from "@/components/ui/button";
 import { getPublicMediaUrl } from "@/lib/storage";
 
 /** Cible d'un post, aplatie pour l'affichage (horaire effectif déjà résolu côté serveur). */
@@ -69,7 +70,9 @@ function targetChip(target: UpcomingTarget, now: Date, timezone: string) {
 
 /**
  * Carte « Prochaines publications » (colonne gauche de la maquette) : liste dense des ~6 prochains
- * posts. Chaque ligne est cliquable → /composer/{postId}.
+ * posts PROGRAMMÉS À VENIR uniquement (P2-2) — jamais de post passé (publié/échoué/brouillon) mélangé
+ * dedans, pour ne pas faire passer un échec d'hier pour une publication à venir. Ces posts vivent
+ * désormais dans la carte « À traiter » (NeedsAttentionCard). Chaque ligne est cliquable → /composer/{postId}.
  */
 export function UpcomingPostsCard({
   posts,
@@ -91,6 +94,12 @@ export function UpcomingPostsCard({
             icon={CalendarClock}
             title="Aucune publication à venir"
             description="Créez un post et programmez-le depuis le composer."
+            action={
+              <Link href="/composer" className={buttonVariants({ variant: "outline", size: "sm" })}>
+                <Plus className="size-3.5" />
+                Créer un post
+              </Link>
+            }
           />
         </div>
       ) : (

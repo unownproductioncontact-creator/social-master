@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
-import { headObject } from "@/lib/storage";
+import { headObject, getPublicMediaUrl } from "@/lib/storage";
 
 export async function POST(_req: Request, ctx: RouteContext<"/api/media/[id]/complete">) {
   const session = await verifySession();
@@ -44,5 +44,8 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/media/[id]/com
 
   await db.mediaAsset.update({ where: { id }, data });
 
-  return NextResponse.json({ ok: true });
+  // URL publique (proxy /api/m/, voir CLAUDE.md §3) : le composer en masse en a besoin immédiatement
+  // pour prévisualiser un média fraîchement uploadé (avant tout `router.refresh()` qui re-résoudrait
+  // `libraryMedia` côté serveur) — voir media-uploader.tsx / bulk-composer.tsx.
+  return NextResponse.json({ ok: true, publicUrl: getPublicMediaUrl(asset.storageKey) });
 }

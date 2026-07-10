@@ -2,7 +2,7 @@ import Link from "next/link";
 import { formatInTimeZone } from "date-fns-tz";
 import { getISOWeek, parseISO } from "date-fns";
 import { fr } from "date-fns/locale";
-import { LibraryBig, Plus } from "lucide-react";
+import { SquarePen, Layers } from "lucide-react";
 import { verifySession, getCurrentUser } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { StatCard } from "@/components/ui/stat-card";
@@ -14,6 +14,13 @@ import {
 } from "@/components/dashboard/upcoming-posts-card";
 import { WeekCalendarCard } from "@/components/dashboard/week-calendar-card";
 import { ConnectionsCard } from "@/components/dashboard/connections-card";
+import {
+  NeedsAttentionCard,
+  type ActionablePost,
+  type PendingTikTokDraft,
+} from "@/components/dashboard/needs-attention-card";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
+import { AutoRefresh } from "@/components/util/auto-refresh";
 
 /** Horaire effectif le plus tôt d'un post (min des PostTarget.scheduledAt, fallback Post.scheduledAt). */
 function earliestTargetTime(
@@ -49,6 +56,7 @@ export default async function DashboardPage() {
   const now = new Date();
   const in72h = new Date(now.getTime() + 72 * 3600 * 1000);
   const in30dAgo = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+  const in7dAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
 
   // Repères de calendrier dans le fuseau du user (jour/semaine « locaux »).
   const dayKey = (d: Date) => formatInTimeZone(d, timezone, "yyyy-MM-dd");
@@ -93,15 +101,39 @@ export default async function DashboardPage() {
     },
   });
   const publishedCount30d = recentPublished.length;
-  // Posts récents non-programmés (pour compléter la liste jusqu'à 6, comme la maquette qui mélange).
-  const recentOtherPosts = await db.post.findMany({
+  // Carte « À traiter » (P2-2 + P1-5c) : échecs/succès partiels — requête distincte de `failuresCount`
+  // (non plafonné) puisqu'on ne veut afficher ici que les N plus récents, pas la liste exhaustive.
+  const actionablePosts = await db.post.findMany({
     where: {
       userId: session.userId,
-      status: { in: ["PUBLISHED", "PARTIALLY_PUBLISHED", "FAILED", "DRAFT"] },
+      status: { in: ["FAILED", "PARTIALLY_PUBLISHED"] },
     },
-    include: mediaInclude,
+    select: {
+      id: true,
+      caption: true,
+      status: true,
+      postTargets: { select: { errorMessage: true } },
+    },
     orderBy: { updatedAt: "desc" },
-    take: 6,
+    take: 5,
+  });
+  // Cibles TikTok en mode brouillon arrivées dans l'inbox (finalisation manuelle requise), 7 j.
+  const pendingTiktokDrafts = await db.postTarget.findMany({
+    where: {
+      post: { userId: session.userId },
+      platform: "TIKTOK",
+      publishMode: "TIKTOK_DRAFT",
+      status: "SENT_TO_INBOX",
+      updatedAt: { gte: in7dAgo },
+    },
+    select: {
+      id: true,
+      postId: true,
+      captionOverride: true,
+      post: { select: { caption: true, hashtags: true } },
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 5,
   });
   const accounts = await db.socialAccount.findMany({
     where: { userId: session.userId },
@@ -119,11 +151,11 @@ export default async function DashboardPage() {
   // ——— Stat 2 : publiées (30 j) ———
   const publishedThisWeek = recentPublished.filter((p) => dayKey(p.updatedAt) >= mondayKey).length;
 
-  // ——— Liste « Prochaines publications » : programmés à venir d'abord, puis récents pour remplir ———
+  // ——— Liste « Prochaines publications » : UNIQUEMENT des posts programmés à venir (P2-2) ———
+  // Plus aucun post passé (publié/échoué/brouillon) n'y est mélangé — voir NeedsAttentionCard
+  // ci-dessous pour les échecs et brouillons TikTok en attente.
   const upcomingSorted = [...scheduledWithTime].sort((a, b) => a.at.getTime() - b.at.getTime());
-  const usedIds = new Set(upcomingSorted.map((x) => x.post.id));
-  const fillers = recentOtherPosts.filter((p) => !usedIds.has(p.id));
-  const listPosts = [...upcomingSorted.map((x) => x.post), ...fillers].slice(0, 6);
+  const listPosts = upcomingSorted.map((x) => x.post).slice(0, 6);
 
   const upcomingCards: UpcomingPost[] = listPosts.map((post) => ({
     id: post.id,
@@ -135,6 +167,21 @@ export default async function DashboardPage() {
       platform: t.platform,
       scheduledAt: t.scheduledAt ?? post.scheduledAt,
     })),
+  }));
+
+  // ——— Carte « À traiter » : échecs/succès partiels + brouillons TikTok en attente ———
+  const actionablePostCards: ActionablePost[] = actionablePosts.map((post) => ({
+    id: post.id,
+    caption: post.caption,
+    status: post.status,
+    errorMessage: post.postTargets.find((t) => t.errorMessage != null)?.errorMessage ?? null,
+  }));
+  const tiktokDraftCards: PendingTikTokDraft[] = pendingTiktokDrafts.map((target) => ({
+    targetId: target.id,
+    postId: target.postId,
+    caption: target.post.caption,
+    hashtags: target.post.hashtags,
+    captionOverride: target.captionOverride,
   }));
 
   // ——— Mini-calendrier : semaine locale courante + pips des jours ayant ≥1 post programmé ———
@@ -150,22 +197,25 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4">
+      <AutoRefresh intervalMs={60000} />
       <PageHeader
         title={`Bonjour${user?.name ? `, ${user.name}` : ""} 👋`}
         description="Voici l’état de votre planificateur."
         actions={
           <>
-            <Link href="/library" className={buttonVariants({ variant: "outline" })}>
-              <LibraryBig className="size-4" />
-              Médiathèque
+            <Link href="/composer/bulk" className={buttonVariants({ variant: "outline" })}>
+              <Layers className="size-4" />
+              Publication en masse
             </Link>
             <Link href="/composer" className={buttonVariants({ variant: "default" })}>
-              <Plus className="size-4" />
-              Nouveau post
+              <SquarePen className="size-4" />
+              Créer un post
             </Link>
           </>
         }
       />
+
+      {accounts.length === 0 && <OnboardingCard />}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <StatCard
@@ -180,16 +230,34 @@ export default async function DashboardPage() {
           delta={`+${publishedThisWeek} cette semaine`}
           deltaTone="accent"
         />
-        <StatCard
-          label="Échecs à corriger"
-          value={failuresCount}
-          delta={failuresCount === 0 ? "Tout est en ordre" : "À corriger en priorité"}
-          deltaTone={failuresCount === 0 ? "ok" : "err"}
-        />
+        {failuresCount > 0 ? (
+          <Link
+            href="/history?filter=failed"
+            className="group block rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <StatCard
+              label="Échecs à corriger"
+              value={failuresCount}
+              delta="À corriger en priorité"
+              deltaTone="err"
+              className="transition-colors group-hover:border-destructive/40"
+            />
+          </Link>
+        ) : (
+          <StatCard
+            label="Échecs à corriger"
+            value={failuresCount}
+            delta="Tout est en ordre"
+            deltaTone="ok"
+          />
+        )}
       </div>
 
       <div className="grid items-start gap-3 lg:grid-cols-[1.45fr_1fr]">
-        <UpcomingPostsCard posts={upcomingCards} now={now} timezone={timezone} />
+        <div className="flex flex-col gap-3">
+          <UpcomingPostsCard posts={upcomingCards} now={now} timezone={timezone} />
+          <NeedsAttentionCard failedPosts={actionablePostCards} tiktokDrafts={tiktokDraftCards} />
+        </div>
         <div className="flex flex-col gap-3">
           <WeekCalendarCard
             weekDays={weekDays}

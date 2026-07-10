@@ -12,6 +12,9 @@ import { UploadQueue, type UploadItem } from "@/lib/upload-queue";
 type ImageMeta = { width: number; height: number; durationSec?: undefined };
 type VideoMeta = { width: number; height: number; durationSec: number };
 
+/** Résultat d'un upload réussi, remonté par l'exécuteur de la file (voir uploadExecutor). */
+type UploadResult = { mediaAssetId: string; publicUrl: string };
+
 function readImageMeta(file: File): Promise<ImageMeta> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -157,7 +160,7 @@ async function uploadExecutor(
   file: File,
   onProgress: (percent: number) => void,
   signal: AbortSignal
-): Promise<{ mediaAssetId: string }> {
+): Promise<UploadResult> {
   const isVideo = file.type.startsWith("video/");
   const meta = isVideo ? await readVideoMeta(file) : await readImageMeta(file);
 
@@ -186,13 +189,14 @@ async function uploadExecutor(
   if (!completeRes.ok) {
     throw new Error("Échec de la finalisation de l'upload.");
   }
+  const { publicUrl } = await completeRes.json();
 
   if (isVideo) {
     // Ne jamais attendre/bloquer sur la miniature : l'upload est déjà READY à ce stade.
     void uploadThumbnailBestEffort(mediaAssetId, file);
   }
 
-  return { mediaAssetId };
+  return { mediaAssetId, publicUrl: publicUrl ?? "" };
 }
 
 function formatSize(bytes: number): string {
@@ -200,7 +204,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
-function ItemStatusIcon({ state }: { state: UploadItem<File, { mediaAssetId: string }>["state"] }) {
+function ItemStatusIcon({ state }: { state: UploadItem<File, UploadResult>["state"] }) {
   switch (state) {
     case "done":
       return <CircleCheck className="size-4 text-primary-strong" />;
@@ -218,7 +222,7 @@ function UploadRow({
   onRetry,
   onCancel,
 }: {
-  item: UploadItem<File, { mediaAssetId: string }>;
+  item: UploadItem<File, UploadResult>;
   onRetry: (id: string) => void;
   onCancel: (id: string) => void;
 }) {
@@ -276,6 +280,8 @@ export type UploadedMedia = {
   fileName: string;
   mimeType: string;
   isVideo: boolean;
+  /** URL publique (proxy /api/m/) résolue côté serveur à la finalisation — chaîne vide si indisponible. */
+  publicUrl: string;
 };
 
 export function MediaUploader({ onUploaded }: { onUploaded?: (media: UploadedMedia) => void } = {}) {
@@ -283,11 +289,11 @@ export function MediaUploader({ onUploaded }: { onUploaded?: (media: UploadedMed
   const [isDragging, setIsDragging] = useState(false);
   const router = useRouter();
 
-  const queueRef = useRef<UploadQueue<File, { mediaAssetId: string }> | null>(null);
+  const queueRef = useRef<UploadQueue<File, UploadResult> | null>(null);
   if (!queueRef.current) {
-    queueRef.current = new UploadQueue<File, { mediaAssetId: string }>(uploadExecutor);
+    queueRef.current = new UploadQueue<File, UploadResult>(uploadExecutor);
   }
-  const [items, setItems] = useState<UploadItem<File, { mediaAssetId: string }>[]>([]);
+  const [items, setItems] = useState<UploadItem<File, UploadResult>[]>([]);
   const previousDoneCount = useRef(0);
   // Les ids déjà notifiés via `onUploaded` — on ne notifie chaque média qu'une seule fois.
   const notifiedIds = useRef<Set<string>>(new Set());
@@ -318,6 +324,7 @@ export function MediaUploader({ onUploaded }: { onUploaded?: (media: UploadedMed
               fileName: item.file.name,
               mimeType: item.file.type,
               isVideo: item.file.type.startsWith("video/"),
+              publicUrl: item.result.publicUrl,
             });
           }
         }

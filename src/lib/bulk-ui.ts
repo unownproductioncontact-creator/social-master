@@ -1,14 +1,20 @@
 // Logique PURE d'UI pour la page « Publication en masse » (/composer/bulk).
 //
 // Aucun accès réseau/DB/DOM ici — uniquement des transformations de valeurs, pour que tout soit
-// testable unitairement (bulk-ui.test.ts). Le composant client (bulk-composer.tsx) importe ces
-// fonctions pour l'application groupée (légende/hashtags communs) et l'espacement des horaires.
+// testable unitairement (bulk-ui.test.ts). Les composants client (bulk-composer.tsx, bulk-card.tsx)
+// importent ces fonctions pour l'application groupée (légende/hashtags communs), l'espacement des
+// horaires, la conversion fuseau-aware et le calcul des horaires effectifs par carte.
 //
 // Convention de date côté UI : on manipule des chaînes `datetime-local` au format
 // « yyyy-MM-ddTHH:mm » (ce que produit/consomme un <input type="datetime-local">), interprétées
 // dans le fuseau de l'utilisateur au moment de la soumission (jamais ici). Espacer les vidéos revient
 // donc à additionner des minutes à cette heure locale « murale » — sans conversion de fuseau, ce qui
-// est exactement le comportement attendu par l'utilisateur qui voit ces champs.
+// est exactement le comportement attendu par l'utilisateur qui voit ces champs. Plus bas, une AUTRE
+// famille de fonctions (localToDate et consorts) fait la VRAIE conversion de fuseau (date-fns-tz),
+// nécessaire pour soumettre au serveur et pour comparer un horaire à la fenêtre morte du service.
+
+import { fromZonedTime, formatInTimeZone } from "date-fns-tz";
+import { isInQuietWindow } from "@/lib/schedule-window";
 
 /**
  * Découpe une saisie de hashtags en tokens normalisés, EXACTEMENT comme le composer mono-post
@@ -196,4 +202,108 @@ export function validateCard(input: CardValidationInput, now: number = Date.now(
     return "Ajoutez une légende (obligatoire pour Instagram).";
   }
   return null;
+}
+
+// -----------------------------------------------------------------------------
+// Conversion fuseau-aware datetime-local ↔ Date (bord réel avec le fuseau utilisateur, P3-5b)
+// -----------------------------------------------------------------------------
+
+/**
+ * Convertit une chaîne datetime-local (heure murale dans `timezone`) en Date UTC via `fromZonedTime`.
+ * Renvoie `null` si la chaîne est syntaxiquement invalide (voir isValidDateTimeLocal) ou si la
+ * conversion échoue.
+ */
+export function localToDate(value: string, timezone: string): Date | null {
+  if (!isValidDateTimeLocal(value)) return null;
+  const utc = fromZonedTime(value, timezone);
+  return Number.isNaN(utc.getTime()) ? null : utc;
+}
+
+/** Comme localToDate, mais renvoie des millisecondes epoch (NaN si invalide). */
+export function localToMs(value: string, timezone: string): number {
+  const date = localToDate(value, timezone);
+  return date ? date.getTime() : Number.NaN;
+}
+
+/** Comme localToDate, mais renvoie une chaîne ISO 8601 prête pour une Server Action (null si invalide). */
+export function localToIso(value: string, timezone: string): string | null {
+  const date = localToDate(value, timezone);
+  return date ? date.toISOString() : null;
+}
+
+/** Formate une Date UTC en chaîne datetime-local représentant l'heure murale dans `timezone`. */
+export function dateToLocal(date: Date, timezone: string): string {
+  return formatInTimeZone(date, timezone, "yyyy-MM-dd'T'HH:mm");
+}
+
+// -----------------------------------------------------------------------------
+// Horaires effectifs par carte (P1-4 compteur TikTok fenêtré, P1-3 avertissement fenêtre morte)
+// -----------------------------------------------------------------------------
+
+export type BulkTimingMode = "offset" | "simultaneous" | "custom";
+
+/** Sous-ensemble d'une carte utile au calcul des horaires effectifs (structurel : pas d'import de BulkCardState). */
+export type CardTimeFields = {
+  platforms: CardPlatforms;
+  dateTime: string;
+  tiktokTime: string;
+  instagramTime: string;
+};
+
+/**
+ * Horaire TikTok EFFECTIF (ms) d'une carte, selon le mode de timing du lot — même résolution que le
+ * serveur (`computeTargetTimes` dans bulk-scheduler.ts : en offset/simultané TikTok part à l'horaire
+ * de base `dateTime`, en custom il a son propre champ `tiktokTime`). Renvoie `null` si la carte ne
+ * cible pas TikTok, ou si son horaire est vide/invalide — un item invalide échouera de toute façon à
+ * la soumission (voir validateCard), ce calcul ne doit jamais jeter.
+ */
+export function effectiveTiktokTimeMs(
+  card: CardTimeFields,
+  timingMode: BulkTimingMode,
+  timezone: string
+): number | null {
+  if (!card.platforms.tiktok) return null;
+  const raw = timingMode === "custom" ? card.tiktokTime : card.dateTime;
+  const ms = localToMs(raw, timezone);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** Un champ horaire d'une carte concerné par un contrôle (fenêtre morte…), avec son nom et sa valeur brute. */
+export type TimedField = { field: "dateTime" | "tiktokTime" | "instagramTime"; value: string };
+
+/**
+ * Champs horaires PERTINENTS d'une carte selon le mode de timing et les plateformes cochées :
+ *  - offset/simultané : un seul champ partagé (`dateTime`), pertinent dès qu'au moins une plateforme
+ *    est cochée (c'est le seul horaire que l'utilisateur voit dans ce mode) ;
+ *  - custom : un champ par plateforme cochée (`tiktokTime`/`instagramTime`).
+ * Un champ grisé (plateforme non ciblée) n'est jamais renvoyé.
+ */
+export function relevantTimeFields(card: CardTimeFields, timingMode: BulkTimingMode): TimedField[] {
+  if (timingMode === "custom") {
+    const fields: TimedField[] = [];
+    if (card.platforms.tiktok) fields.push({ field: "tiktokTime", value: card.tiktokTime });
+    if (card.platforms.instagram) fields.push({ field: "instagramTime", value: card.instagramTime });
+    return fields;
+  }
+  if (card.platforms.tiktok || card.platforms.instagram) {
+    return [{ field: "dateTime", value: card.dateTime }];
+  }
+  return [];
+}
+
+/**
+ * Parmi les champs horaires pertinents d'une carte (relevantTimeFields), ceux qui tombent dans la
+ * fenêtre morte 23h-7h du service (isInQuietWindow) — sert au marqueur ambre par carte ET au résumé
+ * du lot (P1-3). Un champ syntaxiquement invalide n'est jamais signalé (il sera de toute façon rejeté
+ * par validateCard à la soumission).
+ */
+export function cardQuietWindowFields(
+  card: CardTimeFields,
+  timingMode: BulkTimingMode,
+  timezone: string
+): TimedField[] {
+  return relevantTimeFields(card, timingMode).filter(({ value }) => {
+    const date = localToDate(value, timezone);
+    return date !== null && isInQuietWindow(date, timezone);
+  });
 }

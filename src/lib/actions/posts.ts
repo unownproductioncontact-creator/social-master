@@ -4,9 +4,10 @@ import * as z from "zod";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { fromZonedTime } from "date-fns-tz";
+import type { Platform } from "@/generated/prisma/client";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
-import { schedulePost, unschedulePost } from "@/lib/scheduler";
+import { schedulePost, unschedulePost, reschedulePost } from "@/lib/scheduler";
 import { checkInstagramCarouselCompatibility, checkTikTokPhotoCompatibility } from "@/lib/media-validation";
 import { computeInstagramContentType, computeTikTokContentType } from "@/lib/content-type";
 
@@ -87,6 +88,20 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
     return { error: "Connectez d'abord votre compte TikTok." };
   }
 
+  // ANTI-DOUBLE-PUBLICATION (P1-2) : une plateforme qui possède DÉJÀ une cible publiée/inbox sur ce
+  // post est « déjà servie ». On ne doit ni supprimer cette cible (perte d'historique) ni en créer une
+  // nouvelle (republication) — même si la case est encore cochée. Cas atteignable : un post
+  // partiellement publié repassé en brouillon (unschedulePost préserve la cible réussie). Le
+  // deleteMany/createMany ci-dessous ne touche donc que les cibles pas-encore-publiées.
+  const servedPlatforms = new Set<Platform>();
+  if (existingPost) {
+    const publishedTargets = await db.postTarget.findMany({
+      where: { postId: existingPost.id, status: { in: ["PUBLISHED", "SENT_TO_INBOX"] } },
+      select: { platform: true },
+    });
+    for (const t of publishedTargets) servedPlatforms.add(t.platform);
+  }
+
   const post = await db.$transaction(async (tx) => {
     const savedPost = existingPost
       ? await tx.post.update({
@@ -107,8 +122,12 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
       data: orderedMedia.map((m, position) => ({ postId: savedPost.id, mediaAssetId: m.id, position })),
     });
 
-    await tx.postTarget.deleteMany({ where: { postId: savedPost.id } });
-    if (data.targetInstagram && instagramAccount && igContentType) {
+    // Ne supprime QUE les cibles pas-encore-résolues : les cibles PUBLISHED/SENT_TO_INBOX sont
+    // conservées telles quelles (historique + anti-republication, cf. servedPlatforms ci-dessus).
+    await tx.postTarget.deleteMany({
+      where: { postId: savedPost.id, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
+    });
+    if (data.targetInstagram && instagramAccount && igContentType && !servedPlatforms.has("INSTAGRAM")) {
       await tx.postTarget.create({
         data: {
           postId: savedPost.id,
@@ -125,7 +144,7 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
         },
       });
     }
-    if (data.targetTiktok && tiktokAccount && tiktokContentType) {
+    if (data.targetTiktok && tiktokAccount && tiktokContentType && !servedPlatforms.has("TIKTOK")) {
       await tx.postTarget.create({
         data: {
           postId: savedPost.id,
@@ -197,7 +216,50 @@ export async function unschedulePostAction(postId: string): Promise<void> {
   const post = await db.post.findUnique({ where: { id: postId } });
   if (!post || post.userId !== session.userId) return;
 
+  // GARDE SERVEUR (P1-2) : un post entièrement PUBLIÉ n'est jamais « repassable en brouillon » — le
+  // faire remettrait ses cibles en attente et provoquerait une double publication. Le bouton est déjà
+  // masqué côté UI pour PUBLISHED, mais on ne s'appuie pas dessus (défense en profondeur). Les statuts
+  // PARTIALLY_PUBLISHED / FAILED / SCHEDULED restent autorisés (unschedulePost préserve les cibles
+  // déjà publiées d'un post partiellement publié).
+  if (post.status === "PUBLISHED") return;
+
   await unschedulePost(postId);
   revalidatePath(`/composer/${postId}`);
   revalidatePath("/calendar");
+}
+
+const RescheduleSchema = z.object({
+  postId: z.string().min(1),
+  scheduledAtLocal: z.string().min(1, { error: "Choisissez une date et une heure." }),
+  timezone: z.string().default("Europe/Paris"),
+});
+
+/**
+ * « Modifier l'horaire » en UNE action (P2-4) : re-programme un post déjà SCHEDULED sans re-saisie
+ * destructive. Même pattern zod/fromZonedTime que `scheduleExistingPost` ; toute la logique (refus si
+ * pas SCHEDULED, validation avant écriture, préservation des décalages inter-cibles) vit dans
+ * `reschedulePost`.
+ */
+export async function reschedulePostAction(input: z.infer<typeof RescheduleSchema>): Promise<ScheduleResult> {
+  const session = await verifySession();
+  const parsed = RescheduleSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: z.flattenError(parsed.error).fieldErrors.scheduledAtLocal?.[0] ?? "Formulaire invalide." };
+  }
+  const { postId, scheduledAtLocal, timezone } = parsed.data;
+
+  const post = await db.post.findUnique({ where: { id: postId } });
+  if (!post || post.userId !== session.userId) return { error: "Post introuvable." };
+
+  // datetime-local n'inclut pas de fuseau : on interprète l'heure saisie dans le fuseau de
+  // l'utilisateur (jamais celui du serveur, potentiellement UTC en production).
+  const newBase = fromZonedTime(scheduledAtLocal, timezone);
+  if (Number.isNaN(newBase.getTime())) return { error: "Date invalide." };
+
+  const result = await reschedulePost(postId, newBase, timezone);
+  if (result.error) return result;
+
+  revalidatePath(`/composer/${postId}`);
+  revalidatePath("/calendar");
+  return {};
 }

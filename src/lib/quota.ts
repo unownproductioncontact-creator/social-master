@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { decryptToken } from "@/lib/crypto";
 import { getContentPublishingLimit } from "@/lib/providers/instagram";
+import { maxCountInSlidingWindow, TIKTOK_WINDOW_MS } from "@/lib/tiktok-window";
 
 /**
  * Garde-fous de quotas de publication (règle d'ingénierie n°5 : jamais de chiffre en dur pour
@@ -112,6 +113,94 @@ export async function checkTikTokDraftCapacity(
   return { allowed, current, remaining, message };
 }
 
+/**
+ * Horodatages (ms) des « événements brouillon TikTok » EXISTANTS d'un périmètre, tombant dans
+ * [rangeStart ; rangeEnd]. Deux sources, mêmes filtres que `countTikTokDraftsInWindow` :
+ *  - jobs `PublishJob` WAITING/ACTIVE (pas encore livrés) → leur `runAt` (heure prévue de dépôt) ;
+ *  - cibles `TIKTOK_DRAFT` déjà `SENT_TO_INBOX` → leur `publishedAt` (heure de dépôt effective).
+ *
+ * Primitive PARTAGÉE (mono-post via `checkTikTokDraftCapacityAt`, lot via `bulk-scheduler`) : elle
+ * renvoie les instants bruts pour que l'appelant applique la fenêtre glissante `maxCountInSlidingWindow`
+ * autour des NOUVEAUX horaires, au lieu d'un décompte ancré sur « maintenant » (biais corrigé, P1-4).
+ *
+ * Requêtes séquentielles (pas de `Promise.all`) : le moteur `prisma dev` local casse sous requêtes
+ * concurrentes (CLAUDE.md §18) ; le coût prod de deux `findMany` triviaux est négligeable.
+ */
+export async function getTikTokDraftEventTimes(
+  scope: TikTokDraftScope,
+  rangeStart: Date,
+  rangeEnd: Date
+): Promise<number[]> {
+  const accountFilter =
+    "socialAccountId" in scope
+      ? { socialAccountId: scope.socialAccountId }
+      : { socialAccount: { userId: scope.userId } };
+
+  const targetFilter = {
+    platform: "TIKTOK" as const,
+    publishMode: "TIKTOK_DRAFT" as const,
+    ...accountFilter,
+  };
+
+  const upcoming = await db.publishJob.findMany({
+    where: {
+      state: { in: ["WAITING", "ACTIVE"] },
+      runAt: { gte: rangeStart, lte: rangeEnd },
+      postTarget: targetFilter,
+    },
+    select: { runAt: true },
+  });
+
+  const alreadySent = await db.postTarget.findMany({
+    where: {
+      ...targetFilter,
+      status: "SENT_TO_INBOX",
+      publishedAt: { gte: rangeStart, lte: rangeEnd },
+    },
+    select: { publishedAt: true },
+  });
+
+  return [
+    ...upcoming.map((j) => j.runAt.getTime()),
+    ...alreadySent.flatMap((t) => (t.publishedAt ? [t.publishedAt.getTime()] : [])),
+  ];
+}
+
+/**
+ * Capacité TikTok mesurée AUTOUR de l'horaire visé `candidateTime` (et non « maintenant ») — corrige
+ * le biais du décompte ancré sur l'instant présent (P1-4). On charge les brouillons existants sur
+ * [candidateTime − 24 h ; candidateTime + 24 h], on y AJOUTE le candidat, puis on cherche la fenêtre
+ * glissante de 24 h la plus chargée : `allowed=false` dès qu'une fenêtre dépasserait le plafond.
+ *
+ * `current` = charge de la fenêtre la plus dense (candidat inclus), `remaining` = places restantes
+ * dans cette fenêtre. La forme de retour est identique à `checkTikTokDraftCapacity` (compatibilité).
+ */
+export async function checkTikTokDraftCapacityAt(
+  scope: TikTokDraftScope,
+  candidateTime: Date,
+  windowMs: number = TIKTOK_WINDOW_MS
+): Promise<TikTokDraftCapacity> {
+  const candidateMs = candidateTime.getTime();
+  const existing = await getTikTokDraftEventTimes(
+    scope,
+    new Date(candidateMs - windowMs),
+    new Date(candidateMs + windowMs)
+  );
+
+  const busiest = maxCountInSlidingWindow([...existing, candidateMs], windowMs);
+  const remaining = Math.max(0, TIKTOK_MAX_PENDING_DRAFTS_24H - busiest);
+  const allowed = busiest <= TIKTOK_MAX_PENDING_DRAFTS_24H;
+
+  if (allowed) return { allowed, current: busiest, remaining };
+
+  const message =
+    `TikTok limite à ${TIKTOK_MAX_PENDING_DRAFTS_24H} brouillons en attente par 24 h. Cet horaire ` +
+    `placerait ${busiest} brouillon(s) TikTok dans la même fenêtre de 24 h. Choisissez un autre créneau, ` +
+    `ou publiez d'abord un brouillon en attente depuis l'app TikTok.`;
+
+  return { allowed, current: busiest, remaining, message };
+}
+
 // -----------------------------------------------------------------------------
 // Instagram — quota de publication lu en runtime (jamais en dur)
 // -----------------------------------------------------------------------------
@@ -136,7 +225,10 @@ export async function getInstagramQuotaSnapshot(
     if (!account || account.platform !== "INSTAGRAM") return null;
 
     const accessToken = decryptToken(account.accessTokenEnc);
-    const { quotaUsage, quotaTotal } = await getContentPublishingLimit(account.platformAccountId, accessToken);
+    // Chemin du RENDU de la page bulk : il ne doit JAMAIS bloquer longtemps si Meta est lent (cumulé
+    // au cold start Render, l'app paraîtrait cassée). Timeout court à 3 s ; le catch → null ci-dessous
+    // existe déjà et l'UI gère l'absence de snapshot (« quota indisponible »).
+    const { quotaUsage, quotaTotal } = await getContentPublishingLimit(account.platformAccountId, accessToken, 3000);
     return { used: quotaUsage, total: quotaTotal };
   } catch {
     return null;

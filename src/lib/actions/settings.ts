@@ -27,3 +27,33 @@ export async function updateProfile(input: z.infer<typeof UpdateProfileSchema>):
   revalidatePath("/settings");
   return {};
 }
+
+const UpdateMediaRetentionSchema = z.object({
+  // null = désactivé ; les seuls paliers proposés dans l'UI sont 7 / 30 / 90 jours.
+  mediaRetentionDays: z.union([z.literal(7), z.literal(30), z.literal(90), z.null()]),
+});
+
+export type UpdateMediaRetentionResult = { error?: string };
+
+/**
+ * Server Action : règle la purge automatique optionnelle des médias déjà publiés (constat P3-1c).
+ * La purge elle-même tourne dans le worker (src/worker/media-cleanup-job.ts) ; ici on ne fait
+ * qu'enregistrer la préférence utilisateur.
+ */
+export async function updateMediaRetention(
+  input: z.infer<typeof UpdateMediaRetentionSchema>
+): Promise<UpdateMediaRetentionResult> {
+  const session = await verifySession();
+  const parsed = UpdateMediaRetentionSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: "Valeur de rétention invalide." };
+  }
+
+  await db.user.update({
+    where: { id: session.userId },
+    data: { mediaRetentionDays: parsed.data.mediaRetentionDays },
+  });
+
+  revalidatePath("/settings");
+  return {};
+}

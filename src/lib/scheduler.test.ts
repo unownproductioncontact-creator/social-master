@@ -3,7 +3,7 @@
 // dossier, celui-ci nécessite DATABASE_URL et un serveur Postgres local/de test accessible.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "@/lib/db";
-import { schedulePost, unschedulePost } from "@/lib/scheduler";
+import { schedulePost, unschedulePost, reschedulePost } from "@/lib/scheduler";
 import { deleteMediaAssetForUser } from "@/lib/media-delete";
 import { getBoss, PUBLISH_QUEUE } from "@/worker/boss";
 import { encryptToken } from "@/lib/crypto";
@@ -268,6 +268,167 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     expect(igAfter.scheduledAt).toBeNull();
 
     await db.post.delete({ where: { id: dualPostId } });
+  });
+});
+
+describe("unschedulePost / reschedulePost — anti-double-publication & modif horaire (P1-2, P2-4)", () => {
+  it("unschedulePost préserve une cible PUBLISHED, ne réinitialise que la FAILED ; la reprogrammation n'enfile aucun job pour la publiée", async () => {
+    const post = await db.post.create({
+      data: {
+        userId,
+        caption: "Partiellement publié",
+        status: "PARTIALLY_PUBLISHED",
+        scheduledAt: new Date(Date.now() - 3600_000),
+      },
+    });
+    await db.postMedia.create({ data: { postId: post.id, mediaAssetId, position: 0 } });
+
+    const igTarget = await db.postTarget.create({
+      data: {
+        postId: post.id,
+        socialAccountId,
+        platform: "INSTAGRAM",
+        contentType: "IMAGE",
+        publishMode: "AUTO",
+        status: "PUBLISHED",
+        platformPostId: "ig-pub-999",
+        platformPostUrl: "https://instagram.com/p/pub999",
+        publishedAt: new Date(Date.now() - 3600_000),
+        scheduledAt: new Date(Date.now() - 3600_000),
+      },
+    });
+    const tiktokTarget = await db.postTarget.create({
+      data: {
+        postId: post.id,
+        socialAccountId: tiktokAccountId,
+        platform: "TIKTOK",
+        contentType: "TIKTOK_VIDEO",
+        publishMode: "TIKTOK_DRAFT",
+        status: "FAILED",
+        errorCode: "tiktok_generic",
+        errorMessage: "échec précédent",
+        scheduledAt: new Date(Date.now() - 3600_000),
+      },
+    });
+
+    // (i) unschedule → la cible PUBLISHED reste INTACTE, la FAILED repasse PENDING (horaire/erreur nettoyés).
+    await unschedulePost(post.id);
+
+    const igAfter = await db.postTarget.findUniqueOrThrow({ where: { id: igTarget.id } });
+    expect(igAfter.status).toBe("PUBLISHED");
+    expect(igAfter.platformPostId).toBe("ig-pub-999");
+    expect(igAfter.platformPostUrl).toBe("https://instagram.com/p/pub999");
+    expect(igAfter.publishedAt).not.toBeNull();
+
+    const tiktokAfter = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTarget.id } });
+    expect(tiktokAfter.status).toBe("PENDING");
+    expect(tiktokAfter.errorCode).toBeNull();
+    expect(tiktokAfter.errorMessage).toBeNull();
+    expect(tiktokAfter.scheduledAt).toBeNull();
+
+    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).status).toBe("DRAFT");
+
+    // (ii) reprogrammation : AUCUN job pour la cible publiée, un job pour la cible (re)PENDING.
+    const future = new Date(Date.now() + 10 * 60 * 1000);
+    const sched = await scheduleWithRetry(post.id, future, "Europe/Paris");
+    if (sched.error && KNOWN_LOCAL_ENGINE_QUIRK.test(sched.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation moteur prisma dev local (repro P1-2) — non concluant ici.");
+      await db.post.delete({ where: { id: post.id } }).catch(() => {});
+      return;
+    }
+    expect(sched.error).toBeUndefined();
+
+    expect(await db.publishJob.count({ where: { postTargetId: igTarget.id } })).toBe(0);
+    expect(await db.publishJob.count({ where: { postTargetId: tiktokTarget.id } })).toBe(1);
+
+    // La cible publiée n'a pas bougé malgré la reprogrammation.
+    const igReSched = await db.postTarget.findUniqueOrThrow({ where: { id: igTarget.id } });
+    expect(igReSched.status).toBe("PUBLISHED");
+    expect(igReSched.platformPostId).toBe("ig-pub-999");
+
+    await unschedulePost(post.id);
+    await db.post.delete({ where: { id: post.id } });
+  });
+
+  it("reschedulePost décale le post en PRÉSERVANT l'écart de 5 min entre TikTok (H) et Instagram (H+5min)", async () => {
+    const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
+
+    const base = new Date(Date.now() + 20 * 60 * 1000);
+    const igTime = new Date(base.getTime() + 300 * 1000);
+    const sched = await scheduleWithRetry(dualPostId, base, "Europe/Paris", { TIKTOK: base, INSTAGRAM: igTime });
+    if (sched.error && KNOWN_LOCAL_ENGINE_QUIRK.test(sched.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation moteur prisma dev local (reschedule setup) — non concluant ici.");
+      await db.post.delete({ where: { id: dualPostId } }).catch(() => {});
+      return;
+    }
+    expect(sched.error).toBeUndefined();
+
+    // Nouvel horaire de base 2 h plus tard : les cibles doivent conserver l'écart relatif de 5 min.
+    const newBase = new Date(base.getTime() + 2 * 3600 * 1000);
+    const result = await reschedulePost(dualPostId, newBase, "Europe/Paris");
+    if (result.error && KNOWN_LOCAL_ENGINE_QUIRK.test(result.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation moteur prisma dev local (reschedule) — non concluant ici.");
+      await db.post.delete({ where: { id: dualPostId } }).catch(() => {});
+      return;
+    }
+    expect(result.error).toBeUndefined();
+
+    const tiktokAfter = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
+    const igAfter = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
+    expect(tiktokAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
+    expect(igAfter.scheduledAt?.getTime()).toBe(newBase.getTime() + 300 * 1000);
+    // L'écart de 5 min est bien préservé après reprogrammation.
+    expect(igAfter.scheduledAt!.getTime() - tiktokAfter.scheduledAt!.getTime()).toBe(300 * 1000);
+
+    const postAfter = await db.post.findUniqueOrThrow({ where: { id: dualPostId } });
+    expect(postAfter.status).toBe("SCHEDULED");
+    expect(postAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
+
+    // Les runAt des jobs suivent aussi les nouveaux horaires.
+    const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
+    const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
+    expect(tiktokJob.runAt.getTime()).toBe(newBase.getTime());
+    expect(igJob.runAt.getTime()).toBe(newBase.getTime() + 300 * 1000);
+
+    await unschedulePost(dualPostId);
+    await db.post.delete({ where: { id: dualPostId } });
+  });
+
+  it("reschedulePost refuse un post non programmé (DRAFT) sans rien modifier", async () => {
+    const draft = await db.post.create({ data: { userId, caption: "Draft non programmé", status: "DRAFT" } });
+    const result = await reschedulePost(draft.id, new Date(Date.now() + 30 * 60 * 1000), "Europe/Paris");
+    expect(result.error).toMatch(/programmé/i);
+    // Toujours DRAFT, aucun horaire posé.
+    const after = await db.post.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(after.status).toBe("DRAFT");
+    expect(after.scheduledAt).toBeNull();
+    await db.post.delete({ where: { id: draft.id } });
+  });
+
+  it("reschedulePost refuse une date passée sans casser la programmation existante", async () => {
+    const created = await createDraftPost();
+    const future = new Date(Date.now() + 30 * 60 * 1000);
+    const sched = await scheduleWithRetry(created.postId, future, "Europe/Paris");
+    if (sched.error && KNOWN_LOCAL_ENGINE_QUIRK.test(sched.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation moteur prisma dev local (reschedule passé) — non concluant ici.");
+      await db.post.delete({ where: { id: created.postId } }).catch(() => {});
+      return;
+    }
+    expect(sched.error).toBeUndefined();
+
+    // Date passée → refus, ET la programmation actuelle reste intacte (toujours SCHEDULED, job présent).
+    const result = await reschedulePost(created.postId, new Date(Date.now() - 60_000), "Europe/Paris");
+    expect(result.error).toBeTruthy();
+    const post = await db.post.findUniqueOrThrow({ where: { id: created.postId } });
+    expect(post.status).toBe("SCHEDULED");
+    expect(await db.publishJob.count({ where: { postTargetId: created.postTargetId } })).toBe(1);
+
+    await unschedulePost(created.postId);
+    await db.post.delete({ where: { id: created.postId } });
   });
 });
 

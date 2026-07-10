@@ -1,8 +1,14 @@
 import "server-only";
 import type { Platform } from "@/generated/prisma/client";
+import { formatInTimeZone } from "date-fns-tz";
 import { db } from "@/lib/db";
 import { schedulePost, type TargetTimes } from "@/lib/scheduler";
-import { checkTikTokDraftCapacity, getInstagramQuotaSnapshot } from "@/lib/quota";
+import {
+  getInstagramQuotaSnapshot,
+  getTikTokDraftEventTimes,
+  TIKTOK_MAX_PENDING_DRAFTS_24H,
+} from "@/lib/quota";
+import { maxCountInSlidingWindow, TIKTOK_WINDOW_MS } from "@/lib/tiktok-window";
 import {
   checkInstagramCarouselCompatibility,
   checkTikTokPhotoCompatibility,
@@ -19,9 +25,10 @@ import {
  *
  * `scheduleManyPosts` crée puis programme plusieurs posts d'un coup. Deux garde-fous du reste du
  * projet sont respectés à la lettre :
- *   - PRÉ-CHECK GLOBAL de capacité TikTok AVANT toute écriture : si le lot dépasse le plafond de
- *     brouillons en attente (décision produit §2 : blocage EXPLICITE, pas d'étalement automatique),
- *     on retourne immédiatement sans rien créer.
+ *   - PRÉ-CHECK FENÊTRÉ de capacité TikTok AVANT toute écriture (P1-4) : on mesure les fenêtres
+ *     glissantes de 24 h autour des horaires TikTok effectifs du lot (existants + nouveaux) et on
+ *     bloque UNIQUEMENT si une fenêtre dépasse le plafond (décision produit §2 : blocage EXPLICITE,
+ *     pas d'étalement automatique). Un lot étalé sur plusieurs jours n'est donc PLUS bloqué à tort.
  *   - UNE transaction PAR item (jamais de transaction géante inter-posts — règle d'ingénierie n°2 +
  *     pooler Supabase). Un échec sur un item n'annule NI n'empêche les autres.
  *
@@ -154,11 +161,85 @@ export type ScheduleManyResult =
     };
 
 /**
- * Compte le nombre total de cibles TikTok en mode brouillon (`TIKTOK_DRAFT`) que ce lot va créer.
- * Seuls les items ciblant TikTok comptent : une cible TikTok = un futur brouillon inbox.
+ * Horaires TikTok effectifs (ms) que CE lot va créer : pour chaque item ciblant TikTok, l'heure
+ * effective de sa cible TikTok, calculée avec la MÊME logique `computeTargetTimes` que la
+ * programmation réelle. Un item au timing invalide est ignoré ici (il échouera de toute façon item par
+ * item à la programmation) — le pré-check ne doit jamais jeter.
  */
-function countTikTokDraftsInBatch(items: BulkItem[]): number {
-  return items.reduce((total, item) => (item.platforms.tiktok ? total + 1 : total), 0);
+function newTikTokTimesMs(items: BulkItem[]): number[] {
+  const times: number[] = [];
+  for (const item of items) {
+    if (!item.platforms.tiktok) continue;
+    const result = computeTargetTimes(item.baseTime, item.platforms, item.timing);
+    if ("error" in result) continue;
+    const t = result.targetTimes.TIKTOK;
+    if (t && !Number.isNaN(t.getTime())) times.push(t.getTime());
+  }
+  return times;
+}
+
+/**
+ * Trouve la fenêtre glissante de `windowMs` la plus chargée (ancrée sur un horaire du lot fusionné)
+ * qui dépasse `cap`, pour composer un message d'erreur précis (quel jour, combien en trop). Renvoie
+ * null si aucune fenêtre ne dépasse. Même algorithme deux-pointeurs que `maxCountInSlidingWindow`.
+ */
+function busiestOverflowWindow(
+  timesMs: number[],
+  windowMs: number,
+  cap: number
+): { anchorMs: number; count: number } | null {
+  if (timesMs.length === 0) return null;
+  const sorted = [...timesMs].sort((a, b) => a - b);
+  let right = 0;
+  let worst: { anchorMs: number; count: number } | null = null;
+  for (let left = 0; left < sorted.length; left++) {
+    if (right < left) right = left;
+    while (right < sorted.length && sorted[right] - sorted[left] < windowMs) right++;
+    const count = right - left;
+    if (count > cap && (!worst || count > worst.count)) {
+      worst = { anchorMs: sorted[left], count };
+    }
+  }
+  return worst;
+}
+
+/**
+ * PRÉ-CHECK FENÊTRÉ TikTok (P1-4). Au lieu de comparer le NOMBRE TOTAL de cibles TikTok du lot au
+ * plafond (ce qui bloquait à tort un lot étalé sur plusieurs jours : 7 vidéos sur 7 jours > 5), on
+ * résout l'horaire TikTok effectif de chaque item, on charge les brouillons TikTok EXISTANTS dans
+ * [min(nouveaux) − 24 h ; max(nouveaux) + 24 h] (mêmes filtres que `countTikTokDraftsInWindow` via
+ * `getTikTokDraftEventTimes`), on fusionne existants + nouveaux, et on ne BLOQUE que si une fenêtre
+ * glissante de 24 h dépasse le plafond. Renvoie le message de blocage, ou null si le lot passe.
+ */
+async function precheckTikTokWindow(
+  userId: string,
+  items: BulkItem[],
+  windowMs: number
+): Promise<string | null> {
+  const newTimes = newTikTokTimesMs(items);
+  if (newTimes.length === 0) return null;
+
+  const minNew = Math.min(...newTimes);
+  const maxNew = Math.max(...newTimes);
+  const existing = await getTikTokDraftEventTimes(
+    { userId },
+    new Date(minNew - windowMs),
+    new Date(maxNew + windowMs)
+  );
+
+  const all = [...existing, ...newTimes];
+  if (maxCountInSlidingWindow(all, windowMs) <= TIKTOK_MAX_PENDING_DRAFTS_24H) return null;
+
+  const overflow = busiestOverflowWindow(all, windowMs, TIKTOK_MAX_PENDING_DRAFTS_24H);
+  const excess = overflow ? overflow.count - TIKTOK_MAX_PENDING_DRAFTS_24H : 1;
+  const windowLabel = overflow
+    ? `La fenêtre de 24 h démarrant le ${formatInTimeZone(new Date(overflow.anchorMs), "Europe/Paris", "dd/MM 'à' HH'h'mm")} contiendrait ${overflow.count} brouillon(s) TikTok`
+    : "Une fenêtre de 24 h dépasserait le plafond";
+
+  return (
+    `TikTok limite à ${TIKTOK_MAX_PENDING_DRAFTS_24H} brouillons en attente par 24 h. ` +
+    `${windowLabel} — retirez-en ${excess} ou étalez ce lot sur plus de jours.`
+  );
 }
 
 /**
@@ -335,9 +416,9 @@ async function createAndScheduleItem(
 /**
  * Programme plusieurs posts d'un coup.
  *
- * 1. PRÉ-CHECK GLOBAL : compte les cibles TikTok brouillon du lot (N), appelle
- *    `checkTikTokDraftCapacity(scope user, additionalDrafts = N)`. Si `!allowed` → retour immédiat
- *    `{ blocked: true, message }` SANS RIEN créer (décision produit : blocage explicite).
+ * 1. PRÉ-CHECK FENÊTRÉ (P1-4) : `precheckTikTokWindow` mesure les fenêtres glissantes de 24 h autour
+ *    des horaires TikTok effectifs du lot (existants + nouveaux). Si une fenêtre dépasse le plafond →
+ *    retour immédiat `{ blocked: true, message }` SANS RIEN créer (décision produit : blocage explicite).
  * 2. `getInstagramQuotaSnapshot` en AVERTISSEMENT non bloquant (remonté dans `igQuotaWarning`).
  * 3. Pour CHAQUE item : sa propre transaction (création) puis `schedulePost`. Un échec isolé
  *    n'affecte pas les autres items.
@@ -354,22 +435,14 @@ export async function scheduleManyPosts(
     return { blocked: false, results: [], scheduled: 0, failed: 0 };
   }
 
-  // 1. Pré-check GLOBAL de capacité TikTok — AVANT toute écriture.
-  const tiktokDraftsInBatch = countTikTokDraftsInBatch(items);
-  if (tiktokDraftsInBatch > 0) {
-    const capacity = await checkTikTokDraftCapacity(
-      { userId },
-      tiktokDraftsInBatch,
-      options.windowHours
-    );
-    if (!capacity.allowed) {
-      return {
-        blocked: true,
-        message:
-          capacity.message ??
-          "Plafond de brouillons TikTok atteint pour ce lot — réduisez le nombre de posts TikTok.",
-      };
-    }
+  // 1. Pré-check FENÊTRÉ de capacité TikTok — AVANT toute écriture (P1-4). On mesure les fenêtres
+  //    glissantes de 24 h autour des horaires TikTok EFFECTIFS du lot (existants + nouveaux), au lieu
+  //    de comparer le total du lot au plafond (ce qui bloquait à tort un lot étalé sur plusieurs jours).
+  const windowMs =
+    options.windowHours != null ? options.windowHours * 60 * 60 * 1000 : TIKTOK_WINDOW_MS;
+  const tiktokBlockMessage = await precheckTikTokWindow(userId, items, windowMs);
+  if (tiktokBlockMessage) {
+    return { blocked: true, message: tiktokBlockMessage };
   }
 
   // 2. Snapshot quota Instagram (avertissement NON bloquant). On le lit une seule fois pour le lot,

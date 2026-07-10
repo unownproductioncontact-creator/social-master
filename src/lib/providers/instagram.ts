@@ -168,17 +168,27 @@ type CreateContainerParams = {
   thumbOffsetMs?: number; // Reel : frame de couverture (thumb_offset, en ms depuis le début de la vidéo)
 };
 
-async function graphFetch(path: string, accessToken: string, params: Record<string, string>, method: "GET" | "POST" = "GET") {
+async function graphFetch(
+  path: string,
+  accessToken: string,
+  params: Record<string, string>,
+  method: "GET" | "POST" = "GET",
+  timeoutMs?: number
+) {
   const url = new URL(`${GRAPH_BASE}${path}`);
+  // Timeout optionnel : quand fourni, on avorte le fetch au bout de `timeoutMs` (AbortSignal.timeout
+  // rejette en TimeoutError → le job/appelant gère). Sans timeout, on garde le comportement historique
+  // (aucun signal) pour tous les autres appels du provider.
+  const signal = timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
   if (method === "GET") {
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     url.searchParams.set("access_token", accessToken);
-    const res = await fetch(url.toString());
+    const res = await fetch(url.toString(), signal ? { signal } : undefined);
     if (!res.ok) throw new Error(`Graph API Instagram échouée (${res.status}): ${await res.text()}`);
     return res.json();
   }
   const body = new URLSearchParams({ ...params, access_token: accessToken });
-  const res = await fetch(url.toString(), { method: "POST", body });
+  const res = await fetch(url.toString(), signal ? { method: "POST", body, signal } : { method: "POST", body });
   if (!res.ok) throw new Error(`Graph API Instagram échouée (${res.status}): ${await res.text()}`);
   return res.json();
 }
@@ -260,11 +270,16 @@ export async function fetchMediaPermalink(mediaId: string, accessToken: string):
 
 export async function getContentPublishingLimit(
   igUserId: string,
-  accessToken: string
+  accessToken: string,
+  timeoutMs = 8000
 ): Promise<{ quotaUsage: number; quotaTotal: number }> {
-  const json = await graphFetch(`/${igUserId}/content_publishing_limit`, accessToken, {
-    fields: "quota_usage,config",
-  });
+  const json = await graphFetch(
+    `/${igUserId}/content_publishing_limit`,
+    accessToken,
+    { fields: "quota_usage,config" },
+    "GET",
+    timeoutMs
+  );
   const entry = json.data?.[0];
   return {
     quotaUsage: entry?.quota_usage ?? 0,

@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { Platform } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
+import { checkTikTokDraftCapacityAt } from "@/lib/quota";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 
 type SchedulePostResult = { error?: string };
@@ -46,9 +47,20 @@ export async function schedulePost(
   // Horaire effectif de chaque cible : override par plateforme si fourni, sinon l'horaire de base.
   const effectiveTimeFor = (platform: Platform): Date => targetTimes?.[platform] ?? scheduledAt;
 
-  // La validation « ≥ 60s dans le futur » s'applique à la cible LA PLUS TÔT : si la première
-  // publication (TikTok à H, par ex.) est trop proche, on refuse tout le lot.
-  const earliestTime = post.postTargets.reduce(
+  // DÉFENSE EN PROFONDEUR (P1-2 / 1d) : on ne (re)programme QUE les cibles pas-encore-résolues. Une
+  // cible déjà PUBLISHED ou SENT_TO_INBOX ne doit JAMAIS recevoir un nouveau PublishJob ni repasser en
+  // PENDING (sinon double publication) — cas atteignable en reprogrammant un post partiellement publié.
+  // Le worker skippe déjà ces cibles (publish-job.ts:27), mais on ne s'appuie pas dessus.
+  const schedulableTargets = post.postTargets.filter(
+    (t) => t.status === "PENDING" || t.status === "FAILED"
+  );
+  if (schedulableTargets.length === 0) {
+    return { error: "Toutes les cibles de ce post sont déjà publiées — rien à programmer." };
+  }
+
+  // La validation « ≥ 60s dans le futur » s'applique à la cible schedulable LA PLUS TÔT : si la
+  // première publication (TikTok à H, par ex.) est trop proche, on refuse tout le lot.
+  const earliestTime = schedulableTargets.reduce(
     (min, target) => {
       const t = effectiveTimeFor(target.platform).getTime();
       return t < min ? t : min;
@@ -59,6 +71,24 @@ export async function schedulePost(
     return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
   }
 
+  // Garde-fou quota TikTok MESURÉ AUTOUR de l'horaire visé (P1-4) : un brouillon TikTok programmé à T
+  // ne doit pas porter à plus de 5 le nombre de brouillons dans une fenêtre glissante de 24 h autour
+  // de T (le décompte ancré sur « maintenant » était biaisé). Le post lui-même est naturellement
+  // exclu : à la programmation initiale il n'a pas encore de PublishJob ; à la reprogrammation,
+  // unschedulePost a supprimé son job AVANT d'arriver ici.
+  const tiktokTarget = schedulableTargets.find(
+    (t) => t.platform === "TIKTOK" && t.publishMode === "TIKTOK_DRAFT"
+  );
+  if (tiktokTarget) {
+    const capacity = await checkTikTokDraftCapacityAt(
+      { socialAccountId: tiktokTarget.socialAccountId },
+      effectiveTimeFor("TIKTOK")
+    );
+    if (!capacity.allowed) {
+      return { error: capacity.message ?? "Plafond de brouillons TikTok atteint pour cet horaire." };
+    }
+  }
+
   try {
     await db.$transaction(async (tx) => {
       await tx.post.update({
@@ -66,7 +96,7 @@ export async function schedulePost(
         data: { status: "SCHEDULED", scheduledAt, scheduledTz },
       });
 
-      for (const target of post.postTargets) {
+      for (const target of schedulableTargets) {
         const idempotencyKey = randomUUID();
         const targetTime = effectiveTimeFor(target.platform);
 
@@ -104,7 +134,16 @@ export async function schedulePost(
   return {};
 }
 
-/** Annule tous les jobs pg-boss d'un post et repasse ses targets en DRAFT (règle n°2 : jamais de mutation, on annule + recrée). */
+/**
+ * Annule les jobs pg-boss d'un post et repasse ses cibles PAS-ENCORE-PUBLIÉES en DRAFT (règle n°2 :
+ * jamais de mutation, on annule + recrée).
+ *
+ * ⚠️ ANTI-DOUBLE-PUBLICATION (P1-2) : les cibles déjà `PUBLISHED` ou `SENT_TO_INBOX` sont PRÉSERVÉES
+ * telles quelles — statut, `platformPostId`, `platformPostUrl`, `publishedAt` intacts. Sans ce filtre,
+ * « repasser en brouillon pour corriger » un post partiellement publié effacerait l'historique de la
+ * cible réussie ET la ferait republier à la reprogrammation (le pire bug possible, règle n°1). Seules
+ * les cibles PENDING/PROCESSING/FAILED sont réinitialisées.
+ */
 export async function unschedulePost(postId: string): Promise<void> {
   const boss = getBoss();
 
@@ -123,12 +162,68 @@ export async function unschedulePost(postId: string): Promise<void> {
 
   await db.$transaction(async (tx) => {
     await tx.publishJob.deleteMany({ where: { postTarget: { postId } } });
-    // On remet aussi PostTarget.scheduledAt à null : l'horaire effectif n'a de sens que tant que le
-    // post est programmé (symétrique de l'écriture dans schedulePost).
+    // On ne réinitialise QUE les cibles pas-encore-résolues (≠ PUBLISHED/SENT_TO_INBOX). On remet aussi
+    // leur PostTarget.scheduledAt à null : l'horaire effectif n'a de sens que tant que le post est
+    // programmé (symétrique de l'écriture dans schedulePost). Les cibles publiées gardent tout.
     await tx.postTarget.updateMany({
-      where: { postId },
+      where: { postId, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
       data: { status: "PENDING", scheduledAt: null, errorCode: null, errorMessage: null },
     });
     await tx.post.update({ where: { id: postId }, data: { status: "DRAFT", scheduledAt: null } });
   });
+}
+
+/**
+ * Modifie l'horaire d'un post DÉJÀ programmé en UNE action (P2-4), sans re-saisie destructive, en
+ * préservant les DÉCALAGES relatifs entre cibles (ex. TikTok à H, Instagram à H+5 min restent espacés
+ * de 5 min autour du nouvel horaire de base).
+ *
+ * Garde-fous :
+ *  - refuse si le post n'est pas `SCHEDULED` ;
+ *  - VALIDE la nouvelle date (future, non NaN) AVANT toute écriture : si elle est invalide/passée,
+ *    on ne touche à rien et la programmation actuelle reste intacte (pas de unschedule destructif
+ *    suivi d'un échec) ;
+ *  - sous le capot : `unschedulePost` puis `schedulePost` avec les nouveaux horaires (même chemin
+ *    transactionnel que le reste — jamais de mutation en place, règle n°2).
+ */
+export async function reschedulePost(
+  postId: string,
+  newBase: Date,
+  scheduledTz: string
+): Promise<SchedulePostResult> {
+  if (Number.isNaN(newBase.getTime())) return { error: "Date invalide." };
+
+  const post = await db.post.findUnique({
+    where: { id: postId },
+    include: { postTargets: true },
+  });
+  if (!post) return { error: "Post introuvable." };
+  if (post.status !== "SCHEDULED") {
+    return { error: "Seul un post programmé peut voir son horaire modifié." };
+  }
+
+  // Décalage de chaque cible pas-encore-publiée par rapport à l'horaire de base ACTUEL (0 si la cible
+  // n'a pas d'horaire propre), reporté tel quel autour du nouvel horaire de base → écarts conservés.
+  const currentBaseMs = post.scheduledAt?.getTime() ?? newBase.getTime();
+  const newBaseMs = newBase.getTime();
+  const targetTimes: TargetTimes = {};
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const target of post.postTargets) {
+    if (target.status === "PUBLISHED" || target.status === "SENT_TO_INBOX") continue;
+    const delta = (target.scheduledAt?.getTime() ?? currentBaseMs) - currentBaseMs;
+    const newTimeMs = newBaseMs + delta;
+    targetTimes[target.platform] = new Date(newTimeMs);
+    if (newTimeMs < earliest) earliest = newTimeMs;
+  }
+
+  // Validation AVANT tout unschedule : si elle échoue, la programmation existante reste intacte.
+  if (earliest === Number.POSITIVE_INFINITY) {
+    return { error: "Toutes les cibles de ce post sont déjà publiées — rien à reprogrammer." };
+  }
+  if (earliest < Date.now() + 60_000) {
+    return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
+  }
+
+  await unschedulePost(postId);
+  return schedulePost(postId, newBase, scheduledTz, targetTimes);
 }

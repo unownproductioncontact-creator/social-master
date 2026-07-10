@@ -21,3 +21,33 @@ export async function deleteMediaAsset(mediaAssetId: string): Promise<{ error?: 
   revalidatePath("/history");
   return {};
 }
+
+/**
+ * Server Action : suppression groupée de médias (mode sélection de la médiathèque, constat P3-1a).
+ * Boucle SÉQUENTIELLE sur `deleteMediaAssetForUser` (jamais `Promise.all` — quirk moteur `prisma dev`,
+ * cf. CLAUDE.md §15/§18) — même cascade sûre que la suppression unitaire. Retourne un décompte et la
+ * liste des messages d'erreur pour un toast de résultat côté client.
+ */
+export async function deleteMediaAssets(
+  ids: string[]
+): Promise<{ deleted: number; errors: string[] }> {
+  const session = await verifySession();
+
+  const errors: string[] = [];
+  let deleted = 0;
+
+  for (const id of ids) {
+    const result = await deleteMediaAssetForUser(session.userId, id);
+    if (result.error) errors.push(result.error);
+    else deleted++;
+  }
+
+  if (deleted > 0) {
+    revalidatePath("/library");
+    revalidatePath("/calendar");
+    revalidatePath("/dashboard");
+    revalidatePath("/history");
+  }
+
+  return { deleted, errors };
+}
