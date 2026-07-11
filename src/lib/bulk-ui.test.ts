@@ -233,6 +233,35 @@ describe("validateCard", () => {
     ).toBeNull();
   });
 
+  it("autorise une carte YouTube seule (aucune règle de légende YouTube en masse)", () => {
+    expect(
+      validateCard(
+        {
+          mediaCount: 1,
+          caption: "",
+          platforms: { tiktok: false, instagram: false, youtube: true },
+          scheduledMs: future,
+        },
+        now
+      )
+    ).toBeNull();
+  });
+
+  it("accepte YouTube comme unique plateforme pour la règle « au moins une plateforme »", () => {
+    // Sans aucune des trois → refus ; YouTube seul suffit à lever ce refus.
+    expect(
+      validateCard(
+        {
+          mediaCount: 1,
+          caption: "x",
+          platforms: { tiktok: false, instagram: false, youtube: false },
+          scheduledMs: future,
+        },
+        now
+      )
+    ).toBe("Choisissez au moins une plateforme.");
+  });
+
   it("refuse une légende trop longue", () => {
     expect(
       validateCard(
@@ -356,6 +385,33 @@ describe("relevantTimeFields", () => {
       { field: "tiktokTime", value: "2026-07-09T09:00" },
     ]);
   });
+
+  it("custom : inclut youtubeTime quand YouTube est coché (symétrique de tiktok/instagram)", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: true, instagram: false, youtube: true },
+      dateTime: "2026-07-09T10:00",
+      tiktokTime: "2026-07-09T09:00",
+      instagramTime: "2026-07-09T11:00",
+      youtubeTime: "2026-07-09T12:00",
+    };
+    expect(relevantTimeFields(card, "custom")).toEqual([
+      { field: "tiktokTime", value: "2026-07-09T09:00" },
+      { field: "youtubeTime", value: "2026-07-09T12:00" },
+    ]);
+  });
+
+  it("offset/simultané : dateTime reste pertinent pour une carte YouTube seule", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: false, instagram: false, youtube: true },
+      dateTime: "2026-07-09T10:00",
+      tiktokTime: "",
+      instagramTime: "",
+      youtubeTime: "",
+    };
+    expect(relevantTimeFields(card, "offset")).toEqual([
+      { field: "dateTime", value: "2026-07-09T10:00" },
+    ]);
+  });
 });
 
 describe("cardQuietWindowFields", () => {
@@ -401,5 +457,18 @@ describe("cardQuietWindowFields", () => {
       instagramTime: "",
     };
     expect(cardQuietWindowFields(card, "offset", TZ)).toEqual([]);
+  });
+
+  it("mode custom : signale youtubeTime quand il tombe dans la fenêtre morte", () => {
+    const card: CardTimeFields = {
+      platforms: { tiktok: false, instagram: false, youtube: true },
+      dateTime: "2026-07-15T10:00",
+      tiktokTime: "",
+      instagramTime: "",
+      youtubeTime: "2026-07-15T23:30",
+    };
+    expect(cardQuietWindowFields(card, "custom", TZ)).toEqual([
+      { field: "youtubeTime", value: "2026-07-15T23:30" },
+    ]);
   });
 });

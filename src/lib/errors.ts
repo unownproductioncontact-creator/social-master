@@ -2,7 +2,14 @@ export type ErrorClass = "transient" | "content_rejected" | "account_issue";
 
 // Sous-ensemble des codes "account_issue" qui signifient spécifiquement que le token/la connexion
 // est invalide (par opposition à un quota, qui se résout tout seul sans reconnexion).
-const REAUTH_CODES = new Set(["ig_token_invalid", "ig_restricted", "tt_token_invalid", "tt_banned"]);
+const REAUTH_CODES = new Set([
+  "ig_token_invalid",
+  "ig_restricted",
+  "tt_token_invalid",
+  "tt_banned",
+  "yt_token_invalid",
+  "yt_no_channel",
+]);
 
 export function needsReauth(code: string): boolean {
   return REAUTH_CODES.has(code);
@@ -120,4 +127,149 @@ export function classifyTikTokError(err: unknown): ClassifiedError {
     return { errorClass: "content_rejected", code: "tt_invalid_param", message: "TikTok a refusé les paramètres de cette publication." };
   }
   return { errorClass: "transient", code: "tt_unknown", message: "Erreur TikTok inattendue, nouvelle tentative en cours." };
+}
+
+// ---------------------------------------------------------------------------
+// YouTube (Google) — deux formats d'erreur coexistent (CLAUDE.md §25) :
+//   • API googleapis : { "error": { "code": 403, "message": "...",
+//         "errors": [{ "reason": "quotaExceeded", "domain": "youtube.quota", "message": "..." }],
+//         "status": "PERMISSION_DENIED" } }   → error est un OBJET, la raison porte l'info clé.
+//   • OAuth (oauth2.googleapis.com/token) : { "error": "invalid_grant",
+//         "error_description": "Token has been expired or revoked." }  → error est une CHAÎNE.
+// Le provider injecte le corps brut dans le message d'erreur (throw new Error("... : ${text}")).
+// ---------------------------------------------------------------------------
+
+type GoogleErrorFields = {
+  code: number | null;
+  reason: string | null;
+  oauthError: string | null;
+  status: string | null;
+};
+
+function extractGoogleError(message: string): GoogleErrorFields {
+  const jsonStart = message.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(message.slice(jsonStart)) as {
+        error?: unknown;
+      };
+      const err = parsed.error;
+      // Format OAuth : `error` est une chaîne (ex. "invalid_grant").
+      if (typeof err === "string") {
+        return { code: null, reason: null, oauthError: err, status: null };
+      }
+      // Format API : `error` est un objet { code, status, errors: [{ reason }] }.
+      if (err && typeof err === "object") {
+        const e = err as { code?: number; status?: string; errors?: Array<{ reason?: string }> };
+        const reason = Array.isArray(e.errors) && e.errors[0]?.reason ? String(e.errors[0].reason) : null;
+        return {
+          code: typeof e.code === "number" ? e.code : null,
+          reason,
+          oauthError: null,
+          status: typeof e.status === "string" ? e.status : null,
+        };
+      }
+    } catch {
+      // Corps tronqué/malformé : on retombe sur l'analyse par regex du message (plus bas).
+    }
+  }
+  return { code: null, reason: null, oauthError: null, status: null };
+}
+
+// Le quota videos.insert (100/j) ET les limites de débit se réinitialisent seuls — décision produit
+// §25 : on les classe en "account_issue" NON-reauth (pas de retry en boucle, message d'attente).
+const YT_QUOTA_REASONS = /quotaExceeded|dailyLimitExceeded|rateLimitExceeded|userRateLimitExceeded|uploadLimitExceeded/;
+// Métadonnées/média invalides ou traitement échoué → refus PERMANENT, jamais retenté.
+const YT_CONTENT_REASONS = /invalidTitle|invalidDescription|invalidTags|invalidVideoMetadata|invalidCategoryId|invalidFilename|invalidRecordingDetails|mediaBodyRequired|failedPrecondition|processingFailure|uploadRejected/;
+// Auth/permission → reconnexion (le user doit re-consentir, y compris réaccorder youtube.upload s'il
+// l'a refusé → insufficientPermissions). `forbidden` seul reste ambigu → traité en contenu (voir plus bas).
+const YT_REAUTH_REASONS = /authError|insufficientPermissions|unauthorized|invalidCredentials/;
+
+/**
+ * Classifie une erreur de publication/OAuth YouTube (CLAUDE.md §25). Ordre : marqueur « pas de chaîne »
+ * → OAuth invalid_grant → quota → contenu invalide → auth/permission (401 ou raison) → 403 nu (contenu,
+ * prudent) → 5xx/backend (transitoire) → défaut transitoire. Ne retente JAMAIS un rejet de contenu ; un
+ * problème de token met le compte en NEEDS_REAUTH (géré par l'appelant via needsReauth()).
+ */
+export function classifyYouTubeError(err: unknown): ClassifiedError {
+  const message = err instanceof Error ? err.message : String(err);
+  const { code, reason, oauthError, status } = extractGoogleError(message);
+
+  // Aucune chaîne YouTube sur le compte Google (marqueur interne provider ou raison API) → reconnexion
+  // après création d'une chaîne.
+  if (reason === "youtubeSignupRequired" || /youtubeSignupRequired/.test(message)) {
+    return {
+      errorClass: "account_issue",
+      code: "yt_no_channel",
+      message: "Aucune chaîne YouTube sur ce compte Google — créez une chaîne puis reconnectez le compte.",
+    };
+  }
+
+  // OAuth : échange/refresh refusé (token expiré ou révoqué) → reconnexion. Détecté via le champ `error`
+  // (chaîne) OU en clair dans le message (couvre aussi un throw interne "invalid_grant: ...").
+  if (
+    (oauthError && /invalid_grant|invalid_client|unauthorized_client|invalid_scope/.test(oauthError)) ||
+    /\binvalid_grant\b/.test(message)
+  ) {
+    return {
+      errorClass: "account_issue",
+      code: "yt_token_invalid",
+      message: "Connexion YouTube expirée ou révoquée — reconnectez votre compte.",
+    };
+  }
+
+  // Quota videos.insert / limites de débit → réessayer plus tard (pas de retry automatique).
+  if ((reason && YT_QUOTA_REASONS.test(reason)) || (reason == null && YT_QUOTA_REASONS.test(message))) {
+    return {
+      errorClass: "account_issue",
+      code: "yt_quota",
+      message: "Quota YouTube atteint — réessayez demain (le quota se réinitialise à minuit heure du Pacifique).",
+    };
+  }
+
+  // Contenu refusé (titre/description/média invalides, traitement échoué) → jamais retenté.
+  if ((reason && YT_CONTENT_REASONS.test(reason)) || /yt_processing_failed/.test(message)) {
+    return {
+      errorClass: "content_rejected",
+      code: "yt_content_rejected",
+      message: "YouTube a refusé cette vidéo (titre, description ou fichier invalide).",
+    };
+  }
+
+  // Auth/permission insuffisante (401, ou raison d'authentification) → reconnexion. Couvre le cas où
+  // l'utilisateur n'a pas accordé youtube.upload (insufficientPermissions).
+  if (code === 401 || (reason && YT_REAUTH_REASONS.test(reason))) {
+    return {
+      errorClass: "account_issue",
+      code: "yt_token_invalid",
+      message: "Connexion YouTube expirée ou autorisation insuffisante — reconnectez votre compte.",
+    };
+  }
+
+  // 403 sans raison reconnue : ni quota, ni auth identifiée. On le traite en refus de contenu (pas de
+  // retry) PLUTÔT qu'en reconnexion, pour ne pas mettre à tort tout le compte en pause sur un rejet
+  // ponctuel (règle §6.4 : ne jamais retenter un rejet, mais ne pauser le compte que sur un vrai souci
+  // de token, qui remonterait en 401/authError déjà traités au-dessus).
+  if (code === 403) {
+    return {
+      errorClass: "content_rejected",
+      code: "yt_forbidden",
+      message: "YouTube a refusé cette publication (accès interdit pour cette vidéo).",
+    };
+  }
+
+  // 5xx / indisponibilité / erreur backend Google → transitoire (retry backoff existant).
+  if (
+    (code !== null && code >= 500) ||
+    (status !== null && /UNAVAILABLE|INTERNAL/.test(status)) ||
+    /backendError|internalError/.test(message)
+  ) {
+    return {
+      errorClass: "transient",
+      code: "yt_server_error",
+      message: "Erreur serveur YouTube, nouvelle tentative en cours.",
+    };
+  }
+
+  return { errorClass: "transient", code: "yt_unknown", message: "Erreur YouTube inattendue, nouvelle tentative en cours." };
 }

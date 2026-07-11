@@ -9,7 +9,11 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { schedulePost, unschedulePost, reschedulePost } from "@/lib/scheduler";
 import { checkInstagramCarouselCompatibility, checkTikTokPhotoCompatibility } from "@/lib/media-validation";
-import { computeInstagramContentType, computeTikTokContentType } from "@/lib/content-type";
+import {
+  computeInstagramContentType,
+  computeTikTokContentType,
+  computeYouTubeContentType,
+} from "@/lib/content-type";
 
 const SavePostSchema = z.object({
   postId: z.string().nullish(),
@@ -19,6 +23,14 @@ const SavePostSchema = z.object({
   targetInstagram: z.boolean().default(false),
   targetInstagramStory: z.boolean().default(false),
   targetTiktok: z.boolean().default(false),
+  targetYoutube: z.boolean().default(false),
+  // Titre YouTube saisi (contrat partagé { title?: string }). Trimé, ≤ 100 car. ; vide/absent →
+  // le worker reconstruit le repli (1re ligne de légende), jamais stocké ici.
+  youtubeTitle: z
+    .string()
+    .trim()
+    .max(100, { error: "Le titre YouTube ne peut pas dépasser 100 caractères." })
+    .nullish(),
   // Reel Instagram : frame de couverture en ms (thumb_offset). Ignoré hors REEL.
   instagramCoverTimeMs: z.number().int().min(0).nullish(),
 });
@@ -36,7 +48,7 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
   }
   const data = parsed.data;
 
-  if (!data.targetInstagram && !data.targetTiktok) {
+  if (!data.targetInstagram && !data.targetTiktok && !data.targetYoutube) {
     return { error: "Choisissez au moins une plateforme." };
   }
 
@@ -68,6 +80,11 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
     if (issues.length > 0) return { error: issues[0].message };
   }
 
+  const youtubeContentType = data.targetYoutube ? computeYouTubeContentType(mediaMeta) : null;
+  if (data.targetYoutube && youtubeContentType === null) {
+    return { error: "YouTube Shorts : sélectionnez une seule vidéo." };
+  }
+
   const existingPost = data.postId
     ? await db.post.findUnique({ where: { id: data.postId } })
     : null;
@@ -81,11 +98,15 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
   const accounts = await db.socialAccount.findMany({ where: { userId: session.userId } });
   const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM");
   const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK");
+  const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE");
   if (data.targetInstagram && !instagramAccount) {
     return { error: "Connectez d'abord votre compte Instagram." };
   }
   if (data.targetTiktok && !tiktokAccount) {
     return { error: "Connectez d'abord votre compte TikTok." };
+  }
+  if (data.targetYoutube && !youtubeAccount) {
+    return { error: "Connectez d'abord votre compte YouTube." };
   }
 
   // ANTI-DOUBLE-PUBLICATION (P1-2) : une plateforme qui possède DÉJÀ une cible publiée/inbox sur ce
@@ -153,6 +174,23 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
           contentType: tiktokContentType,
           publishMode: "TIKTOK_DRAFT",
           status: "PENDING",
+        },
+      });
+    }
+    if (data.targetYoutube && youtubeAccount && youtubeContentType && !servedPlatforms.has("YOUTUBE")) {
+      await tx.postTarget.create({
+        data: {
+          postId: savedPost.id,
+          socialAccountId: youtubeAccount.id,
+          platform: "YOUTUBE",
+          contentType: youtubeContentType,
+          // YouTube = publication DIRECTE (pas d'inbox), comme Instagram (CLAUDE.md §25).
+          publishMode: "AUTO",
+          status: "PENDING",
+          // Titre explicite UNIQUEMENT s'il a été saisi (contrat partagé { title?: string }). Absent →
+          // le worker reconstruit le repli (1re ligne de légende via youtubeTitleFallback) ; jamais
+          // stocké ici. data.youtubeTitle est déjà trimé par zod (chaîne vide = falsy → pas de titre).
+          platformOptions: data.youtubeTitle ? { title: data.youtubeTitle } : {},
         },
       });
     }

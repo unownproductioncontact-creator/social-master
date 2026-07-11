@@ -3,6 +3,7 @@ import {
   checkInstagramReelCompatibility,
   checkInstagramImageCompatibility,
   checkTikTokVideoCompatibility,
+  checkYouTubeShortCompatibility,
   checkInstagramCarouselCompatibility,
   checkTikTokPhotoCompatibility,
   isAcceptedUploadType,
@@ -69,6 +70,66 @@ describe("checkTikTokVideoCompatibility", () => {
   it("n'a pas d'erreur sous la limite de durée du compte", () => {
     const issues = checkTikTokVideoCompatibility({ mimeType: "video/mp4", sizeBytes: 1000, durationSec: 60 }, 180);
     expect(issues.filter((i) => i.level === "error")).toHaveLength(0);
+  });
+});
+
+describe("checkYouTubeShortCompatibility", () => {
+  it("n'a aucune erreur pour une vidéo verticale courte", () => {
+    const issues = checkYouTubeShortCompatibility({
+      mimeType: "video/mp4",
+      sizeBytes: 10_000_000,
+      durationSec: 30,
+      width: 1080,
+      height: 1920,
+    });
+    expect(issues).toHaveLength(0);
+  });
+
+  it("erreur si le média n'est pas une vidéo", () => {
+    const issues = checkYouTubeShortCompatibility({ mimeType: "image/jpeg", sizeBytes: 1000 });
+    expect(issues.some((i) => i.level === "error")).toBe(true);
+  });
+
+  it("avertissement (non bloquant) au-delà de 3 min", () => {
+    const issues = checkYouTubeShortCompatibility({
+      mimeType: "video/mp4",
+      sizeBytes: 1000,
+      durationSec: 181,
+    });
+    expect(issues.every((i) => i.level !== "error")).toBe(true);
+    expect(issues.some((i) => i.level === "warning" && i.message.includes("vidéo classique"))).toBe(true);
+  });
+
+  it("pile 180 s ne déclenche pas l'avertissement de durée", () => {
+    const issues = checkYouTubeShortCompatibility({
+      mimeType: "video/mp4",
+      sizeBytes: 1000,
+      durationSec: 180,
+    });
+    expect(issues).toHaveLength(0);
+  });
+
+  it("avertissement (non bloquant) pour une vidéo horizontale (largeur > hauteur)", () => {
+    const issues = checkYouTubeShortCompatibility({
+      mimeType: "video/mp4",
+      sizeBytes: 1000,
+      durationSec: 30,
+      width: 1920,
+      height: 1080,
+    });
+    expect(issues.every((i) => i.level !== "error")).toBe(true);
+    expect(issues.some((i) => i.level === "warning" && i.message.includes("horizontale"))).toBe(true);
+  });
+
+  it("le format carré (largeur == hauteur) reste un Short (aucun avertissement)", () => {
+    const issues = checkYouTubeShortCompatibility({
+      mimeType: "video/mp4",
+      sizeBytes: 1000,
+      durationSec: 30,
+      width: 1080,
+      height: 1080,
+    });
+    expect(issues).toHaveLength(0);
   });
 });
 

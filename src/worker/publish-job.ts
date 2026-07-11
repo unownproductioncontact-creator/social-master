@@ -1,13 +1,15 @@
 import "server-only";
 import type { JobWithMetadata } from "pg-boss";
 import { db } from "@/lib/db";
-import { decryptToken } from "@/lib/crypto";
+import { decryptToken, encryptToken } from "@/lib/crypto";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { ensureJpegVersion } from "@/lib/image-convert";
-import { classifyInstagramError, classifyTikTokError, needsReauth } from "@/lib/errors";
+import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
 import { recomputePostStatus } from "@/lib/post-status";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { publishTikTokDraftVideo, publishTikTokDraftPhoto } from "@/lib/providers/tiktok";
+import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
+import { resolveYouTubeTitle } from "@/lib/content-type";
 import { notifyTelegram } from "@/lib/telegram";
 import { appUrl } from "@/lib/app-url";
 
@@ -78,6 +80,52 @@ async function processTarget(postTargetId: string): Promise<void> {
               thumbOffsetMs: coverTimeMs ?? undefined,
             });
           })();
+
+    await db.postTarget.update({
+      where: { id: postTargetId },
+      data: {
+        status: "PUBLISHED",
+        platformPostId: result.platformPostId,
+        platformPostUrl: result.platformPostUrl,
+        publishedAt: new Date(),
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
+  } else if (target.platform === "YOUTUBE") {
+    // Refresh du token AVANT chaque publication : l'access token Google dure ~1h et le cron quotidien
+    // ne touche PAS aux comptes YouTube (V1, CLAUDE.md §25). Google ne fait pas tourner le refresh token,
+    // mais s'il en renvoie un néanmoins on le restocke par prudence.
+    if (!target.socialAccount.refreshTokenEnc) {
+      throw new Error("invalid_grant: aucun jeton de rafraîchissement YouTube stocké (reconnexion requise).");
+    }
+    const refreshed = await refreshYouTubeAccessToken(decryptToken(target.socialAccount.refreshTokenEnc));
+    const now = Date.now();
+    await db.socialAccount.update({
+      where: { id: target.socialAccountId },
+      data: {
+        accessTokenEnc: encryptToken(refreshed.access_token),
+        ...(refreshed.refresh_token ? { refreshTokenEnc: encryptToken(refreshed.refresh_token) } : {}),
+        tokenExpiresAt: new Date(now + refreshed.expires_in * 1000),
+        lastCheckedAt: new Date(),
+      },
+    });
+
+    // Titre : override du composer (platformOptions.title) sinon 1re ligne de la légende — même helper
+    // PUR partagé avec le lot UI (CLAUDE.md §25). `caption` (légende + hashtags, déjà composé plus haut,
+    // format identique au bouton « Copier la légende ») sert de description ; le provider tronque
+    // défensivement titre (≤100) et description (≤5000).
+    const media = orderedMedia[0];
+    const titleOverride = (target.platformOptions as { title?: string } | null)?.title;
+    const title = resolveYouTubeTitle(titleOverride, caption);
+    const result = await publishYouTubeShort({
+      accessToken: refreshed.access_token,
+      storageKey: media.storageKey,
+      videoSizeBytes: media.sizeBytes,
+      title,
+      description: caption,
+      contentType: media.mimeType,
+    });
 
     await db.postTarget.update({
       where: { id: postTargetId },
@@ -199,7 +247,11 @@ export async function handlePublishBatch(
     const rawError = err instanceof Error ? err.message : String(err);
     const target = await db.postTarget.findUnique({ where: { id: postTargetId } });
     const classified =
-      target?.platform === "TIKTOK" ? classifyTikTokError(err) : classifyInstagramError(err);
+      target?.platform === "TIKTOK"
+        ? classifyTikTokError(err)
+        : target?.platform === "YOUTUBE"
+          ? classifyYouTubeError(err)
+          : classifyInstagramError(err);
 
     const isTerminal = classified.errorClass !== "transient" || isLastAttempt;
     await markFailure(postTargetId, idempotencyKey, isTerminal, classified.code, classified.message, rawError);

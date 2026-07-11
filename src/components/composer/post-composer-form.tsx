@@ -197,6 +197,8 @@ export function PostComposerForm({
         targetInstagram: igChecked,
         targetInstagramStory,
         targetTiktok: tiktokChecked,
+        // Câblé en vague 2 (checkbox + titre YouTube) — placeholder pour garder le contrat de savePostDraft.
+        targetYoutube: false,
         instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
       });
       if (result.error) {

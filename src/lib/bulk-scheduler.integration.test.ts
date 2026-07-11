@@ -105,6 +105,72 @@ describe("computeTargetTimes (pur)", () => {
     );
     expect("error" in r).toBe(true);
   });
+
+  it("mode offset, TROIS plateformes : TikTok à H, Instagram à H+300s, YouTube à H+600s", () => {
+    const r = computeTargetTimes(
+      base,
+      { tiktok: true, instagram: true, youtube: true },
+      { mode: "offset" }
+    );
+    if ("error" in r) throw new Error(r.error);
+    expect(r.targetTimes.TIKTOK?.getTime()).toBe(base.getTime());
+    expect(r.targetTimes.INSTAGRAM?.getTime()).toBe(base.getTime() + DEFAULT_OFFSET_SECONDS * 1000);
+    expect(r.targetTimes.YOUTUBE?.getTime()).toBe(base.getTime() + 2 * DEFAULT_OFFSET_SECONDS * 1000);
+  });
+
+  it("mode offset, YouTube SEUL : part à l'horaire de base (rang 0, pas d'offset)", () => {
+    const r = computeTargetTimes(base, { tiktok: false, instagram: false, youtube: true }, { mode: "offset" });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.targetTimes.YOUTUBE?.getTime()).toBe(base.getTime());
+    expect(r.targetTimes.TIKTOK).toBeUndefined();
+    expect(r.targetTimes.INSTAGRAM).toBeUndefined();
+  });
+
+  it("mode offset, Instagram + YouTube (sans TikTok) : IG ancre à H (rang 0), YouTube à H+300s (rang 1)", () => {
+    const r = computeTargetTimes(base, { tiktok: false, instagram: true, youtube: true }, { mode: "offset" });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.targetTimes.INSTAGRAM?.getTime()).toBe(base.getTime());
+    expect(r.targetTimes.YOUTUBE?.getTime()).toBe(base.getTime() + DEFAULT_OFFSET_SECONDS * 1000);
+    expect(r.targetTimes.TIKTOK).toBeUndefined();
+  });
+
+  it("mode simultaneous : les trois plateformes à l'horaire de base", () => {
+    const r = computeTargetTimes(
+      base,
+      { tiktok: true, instagram: true, youtube: true },
+      { mode: "simultaneous" }
+    );
+    if ("error" in r) throw new Error(r.error);
+    expect(r.targetTimes.TIKTOK?.getTime()).toBe(base.getTime());
+    expect(r.targetTimes.INSTAGRAM?.getTime()).toBe(base.getTime());
+    expect(r.targetTimes.YOUTUBE?.getTime()).toBe(base.getTime());
+  });
+
+  it("mode custom : YouTube utilise son horaire fourni", () => {
+    const youtubeTime = new Date("2026-08-01T12:15:00.000Z");
+    const r = computeTargetTimes(
+      base,
+      { tiktok: false, instagram: false, youtube: true },
+      { mode: "custom", customTimes: { youtube: youtubeTime } }
+    );
+    if ("error" in r) throw new Error(r.error);
+    expect(r.targetTimes.YOUTUBE?.getTime()).toBe(youtubeTime.getTime());
+  });
+
+  it("mode custom : YouTube coché sans horaire fourni → erreur", () => {
+    const r = computeTargetTimes(
+      base,
+      { tiktok: false, instagram: false, youtube: true },
+      { mode: "custom", customTimes: {} }
+    );
+    expect("error" in r).toBe(true);
+    if ("error" in r) expect(r.error).toMatch(/youtube/i);
+  });
+
+  it("YouTube seul suffit pour la règle « au moins une plateforme » (pas d'erreur)", () => {
+    const r = computeTargetTimes(base, { tiktok: false, instagram: false, youtube: true }, { mode: "simultaneous" });
+    expect("error" in r).toBe(false);
+  });
 });
 
 // -----------------------------------------------------------------------------

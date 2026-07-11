@@ -16,8 +16,10 @@ import {
 import {
   computeInstagramContentType,
   computeTikTokContentType,
+  computeYouTubeContentType,
   type InstagramContentType,
   type TikTokContentType,
+  type YouTubeContentType,
 } from "@/lib/content-type";
 
 /**
@@ -47,9 +49,11 @@ export const DEFAULT_OFFSET_SECONDS = 300;
 export type BulkTiming =
   | { mode: "offset"; offsetSeconds?: number }
   | { mode: "simultaneous" }
-  | { mode: "custom"; customTimes?: { tiktok?: Date; instagram?: Date } };
+  | { mode: "custom"; customTimes?: { tiktok?: Date; instagram?: Date; youtube?: Date } };
 
-export type SelectedPlatforms = { tiktok: boolean; instagram: boolean };
+// `youtube` est optionnel (défaut = non ciblé) pour rester rétrocompatible avec les appelants qui
+// ne construisent encore que { tiktok, instagram } (Server Action bulk + UI, hors périmètre de ce lot).
+export type SelectedPlatforms = { tiktok: boolean; instagram: boolean; youtube?: boolean };
 
 export type ComputeTargetTimesResult = { targetTimes: TargetTimes } | { error: string };
 
@@ -57,10 +61,12 @@ export type ComputeTargetTimesResult = { targetTimes: TargetTimes } | { error: s
  * Calcule l'horaire effectif de chaque plateforme cochée, à partir de l'horaire de base et du mode
  * de timing choisi. Fonction PURE (aucune I/O) — c'est le cœur testable du décalage horaire.
  *
- *  - `offset` : TikTok part à `baseTime`, Instagram à `baseTime + offsetSeconds` (défaut 300 s,
- *     l'ordre TikTok-d'abord est une décision produit §2). Si une SEULE plateforme est cochée, elle
- *     part à `baseTime` (pas d'offset appliqué à une plateforme seule).
- *  - `simultaneous` : les deux plateformes à `baseTime`.
+ *  - `offset` : décalage EN CASCADE dans l'ordre canonique TikTok → Instagram → YouTube. Chaque
+ *     plateforme cochée part à `baseTime + (rang parmi les cochées) × offsetSeconds` (défaut 300 s).
+ *     La PREMIÈRE plateforme cochée ancre donc toujours l'horaire de base (une plateforme seule =
+ *     pas d'offset). Les trois cochées → TikTok à H, Instagram à H+5 min, YouTube à H+10 min
+ *     (décision produit §25). L'ordre TikTok-d'abord est une décision produit §2.
+ *  - `simultaneous` : toutes les plateformes cochées à `baseTime`.
  *  - `custom` : chaque plateforme cochée DOIT avoir un horaire fourni dans `customTimes` — sinon
  *     erreur (on n'invente pas d'horaire par défaut en mode custom).
  *
@@ -73,7 +79,7 @@ export function computeTargetTimes(
   platforms: SelectedPlatforms,
   timing: BulkTiming
 ): ComputeTargetTimesResult {
-  if (!platforms.tiktok && !platforms.instagram) {
+  if (!platforms.tiktok && !platforms.instagram && !platforms.youtube) {
     return { error: "Choisissez au moins une plateforme." };
   }
   if (Number.isNaN(baseTime.getTime())) {
@@ -86,6 +92,7 @@ export function computeTargetTimes(
     case "simultaneous": {
       if (platforms.tiktok) targetTimes.TIKTOK = baseTime;
       if (platforms.instagram) targetTimes.INSTAGRAM = baseTime;
+      if (platforms.youtube) targetTimes.YOUTUBE = baseTime;
       return { targetTimes };
     }
 
@@ -94,15 +101,16 @@ export function computeTargetTimes(
       if (!Number.isFinite(offsetSeconds) || offsetSeconds < 0) {
         return { error: "Décalage horaire invalide." };
       }
-      const bothSelected = platforms.tiktok && platforms.instagram;
-      if (platforms.tiktok) targetTimes.TIKTOK = baseTime;
-      if (platforms.instagram) {
-        // TikTok d'abord (à H), Instagram décalé (à H+offset) — mais uniquement si les DEUX sont
-        // cochées ; une plateforme seule part à l'horaire de base.
-        targetTimes.INSTAGRAM = bothSelected
-          ? new Date(baseTime.getTime() + offsetSeconds * 1000)
-          : baseTime;
-      }
+      // Décalage en cascade : rang de la plateforme PARMI LES COCHÉES (ordre canonique TikTok,
+      // Instagram, YouTube). rang 0 → horaire de base, rang 1 → +offset, rang 2 → +2×offset. Une
+      // plateforme seule reste ancrée à `baseTime` (rang 0), rétrocompatible avec le comportement 2
+      // plateformes (TikTok à H, Instagram à H+offset).
+      const offsetMs = offsetSeconds * 1000;
+      let rank = 0;
+      if (platforms.tiktok) targetTimes.TIKTOK = new Date(baseTime.getTime() + rank++ * offsetMs);
+      if (platforms.instagram)
+        targetTimes.INSTAGRAM = new Date(baseTime.getTime() + rank++ * offsetMs);
+      if (platforms.youtube) targetTimes.YOUTUBE = new Date(baseTime.getTime() + rank++ * offsetMs);
       return { targetTimes };
     }
 
@@ -119,6 +127,12 @@ export function computeTargetTimes(
           return { error: "Horaire Instagram manquant ou invalide (mode personnalisé)." };
         }
         targetTimes.INSTAGRAM = custom.instagram;
+      }
+      if (platforms.youtube) {
+        if (!custom.youtube || Number.isNaN(custom.youtube.getTime())) {
+          return { error: "Horaire YouTube manquant ou invalide (mode personnalisé)." };
+        }
+        targetTimes.YOUTUBE = custom.youtube;
       }
       return { targetTimes };
     }
@@ -251,8 +265,10 @@ type ValidatedItem = {
   orderedMediaIds: string[];
   igContentType: InstagramContentType | null;
   tiktokContentType: TikTokContentType | null;
+  youtubeContentType: YouTubeContentType | null;
   instagramAccountId: string | null;
   tiktokAccountId: string | null;
+  youtubeAccountId: string | null;
 };
 
 async function validateItem(
@@ -265,7 +281,7 @@ async function validateItem(
   if (item.caption.length > 2200) {
     return { ok: false, error: "2200 caractères maximum." };
   }
-  if (!item.platforms.tiktok && !item.platforms.instagram) {
+  if (!item.platforms.tiktok && !item.platforms.instagram && !item.platforms.youtube) {
     return { ok: false, error: "Choisissez au moins une plateforme." };
   }
 
@@ -303,14 +319,24 @@ async function validateItem(
     if (issues.length > 0) return { ok: false, error: issues[0].message };
   }
 
+  // YouTube (V1) : exactement une vidéo (pas de photo/carrousel), même message que savePostDraft.
+  const youtubeContentType = item.platforms.youtube ? computeYouTubeContentType(mediaMeta) : null;
+  if (item.platforms.youtube && youtubeContentType === null) {
+    return { ok: false, error: "YouTube Shorts : sélectionnez une seule vidéo." };
+  }
+
   const accounts = await db.socialAccount.findMany({ where: { userId } });
   const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM");
   const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK");
+  const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE");
   if (item.platforms.instagram && !instagramAccount) {
     return { ok: false, error: "Connectez d'abord votre compte Instagram." };
   }
   if (item.platforms.tiktok && !tiktokAccount) {
     return { ok: false, error: "Connectez d'abord votre compte TikTok." };
+  }
+  if (item.platforms.youtube && !youtubeAccount) {
+    return { ok: false, error: "Connectez d'abord votre compte YouTube." };
   }
 
   return {
@@ -319,8 +345,10 @@ async function validateItem(
       orderedMediaIds: orderedMedia.map((m) => m.id),
       igContentType,
       tiktokContentType,
+      youtubeContentType,
       instagramAccountId: instagramAccount?.id ?? null,
       tiktokAccountId: tiktokAccount?.id ?? null,
+      youtubeAccountId: youtubeAccount?.id ?? null,
     },
   };
 }
@@ -382,6 +410,20 @@ async function createAndScheduleItem(
             platform: "TIKTOK",
             contentType: validated.tiktokContentType,
             publishMode: "TIKTOK_DRAFT",
+            status: "PENDING",
+          },
+        });
+      }
+      if (item.platforms.youtube && validated.youtubeAccountId && validated.youtubeContentType) {
+        await tx.postTarget.create({
+          data: {
+            postId: created.id,
+            socialAccountId: validated.youtubeAccountId,
+            platform: "YOUTUBE",
+            contentType: validated.youtubeContentType,
+            // Publication directe (§25). PAS de platformOptions.title en masse V1 : le worker
+            // reconstruit le titre (1re ligne de légende) — aucun champ titre par carte en bulk.
+            publishMode: "AUTO",
             status: "PENDING",
           },
         });

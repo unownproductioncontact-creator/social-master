@@ -67,6 +67,30 @@ export function checkTikTokVideoCompatibility(meta: MediaMeta, maxDurationSec?: 
   return issues;
 }
 
+/**
+ * YouTube Short (V1) : YouTube accepte largement les vidéos (MIME `video/*`, jusqu'à 256 Go), donc la
+ * seule ERREUR bloquante est « ce n'est pas une vidéo ». Les deux autres signaux sont de simples
+ * AVERTISSEMENTS non bloquants : une vidéo > 3 min ou au format horizontal sera publiée normalement
+ * mais classée comme vidéo classique plutôt que comme Short (classification automatique de YouTube,
+ * aucun flag API — voir CLAUDE.md §25). Le carré (largeur == hauteur) reste un Short (≥ 1:1).
+ */
+export function checkYouTubeShortCompatibility(meta: MediaMeta): CompatibilityIssue[] {
+  const issues: CompatibilityIssue[] = [];
+  if (!meta.mimeType.startsWith("video/")) {
+    issues.push({ level: "error", message: "Un Short YouTube nécessite une vidéo." });
+  }
+  if (meta.durationSec != null && meta.durationSec > 180) {
+    issues.push({
+      level: "warning",
+      message: "Au-delà de 3 min, YouTube la publiera comme vidéo classique, pas comme Short.",
+    });
+  }
+  if (meta.width != null && meta.height != null && meta.width > meta.height) {
+    issues.push({ level: "warning", message: "Vidéo horizontale : ne sera pas classée Short." });
+  }
+  return issues;
+}
+
 export function isAcceptedUploadType(mimeType: string): boolean {
   return ACCEPTED_IMAGE_TYPES.includes(mimeType) || ACCEPTED_VIDEO_TYPES.includes(mimeType);
 }

@@ -21,6 +21,7 @@ const IsoDate = z
 const PlatformsSchema = z.object({
   tiktok: z.boolean().default(false),
   instagram: z.boolean().default(false),
+  youtube: z.boolean().default(false),
 });
 
 const TimingSchema = z.discriminatedUnion("mode", [
@@ -32,7 +33,7 @@ const TimingSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("custom"),
     customTimes: z
-      .object({ tiktok: IsoDate.optional(), instagram: IsoDate.optional() })
+      .object({ tiktok: IsoDate.optional(), instagram: IsoDate.optional(), youtube: IsoDate.optional() })
       .optional(),
   }),
 ]);

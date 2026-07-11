@@ -16,6 +16,12 @@ export async function runTokenRefresh(): Promise<void> {
     try {
       if (account.platform === "INSTAGRAM") {
         await maybeRefreshInstagram(account);
+      } else if (account.platform === "YOUTUBE") {
+        // V1 (CLAUDE.md §25) : NO-OP explicite pour YouTube. L'access token Google (~1h) est rafraîchi
+        // JUSTE avant chaque publication (worker/publish-job.ts), et Google ne fait pas tourner le
+        // refresh token → rien à anticiper ici. Surtout NE PAS router un compte YouTube vers
+        // maybeRefreshTikTok (il enverrait le refresh token Google à l'endpoint TikTok → échec →
+        // NEEDS_REAUTH à tort). Branche laissée vide à dessein pour ne pas casser la boucle existante.
       } else {
         await maybeRefreshTikTok(account);
       }

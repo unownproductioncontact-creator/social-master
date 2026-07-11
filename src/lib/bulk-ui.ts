@@ -162,7 +162,9 @@ export function computeSpacedTimes(
  */
 export const MIN_LEAD_MS = 2 * 60 * 1000;
 
-export type CardPlatforms = { tiktok: boolean; instagram: boolean };
+// `youtube` optionnel (défaut = non ciblé) : rétrocompatible avec les cartes UI existantes qui ne
+// portent encore que { tiktok, instagram } (le câblage de la case YouTube est hors de ce lot).
+export type CardPlatforms = { tiktok: boolean; instagram: boolean; youtube?: boolean };
 
 export type CardValidationInput = {
   mediaCount: number;
@@ -176,17 +178,19 @@ export type CardValidationInput = {
  * Valide une carte AVANT envoi. Renvoie `null` si tout est bon, sinon un message FR (le premier
  * problème rencontré). Aligné sur les règles réelles :
  *  - au moins un média (bulk-scheduler `validateItem`),
- *  - au moins une plateforme cochée,
+ *  - au moins une plateforme cochée (TikTok, Instagram ou YouTube),
  *  - heure ≥ maintenant + MIN_LEAD_MS (marge de sécurité vs la règle serveur des 60 s),
  *  - légende non vide si Instagram est ciblé (exigence produit : un post IG sans légende n'a pas de
- *    sens ; côté serveur la légende reste optionnelle mais le produit l'impose ici pour Instagram),
+ *    sens ; côté serveur la légende reste optionnelle mais le produit l'impose ici pour Instagram).
+ *    YouTube n'impose AUCUNE règle de légende ici : le titre est auto en masse (1re ligne de légende
+ *    reconstruite par le worker),
  *  - légende ≤ 2200 caractères (limite commune IG/TikTok).
  */
 export function validateCard(input: CardValidationInput, now: number = Date.now()): string | null {
   if (input.mediaCount < 1) {
     return "Sélectionnez au moins un média.";
   }
-  if (!input.platforms.tiktok && !input.platforms.instagram) {
+  if (!input.platforms.tiktok && !input.platforms.instagram && !input.platforms.youtube) {
     return "Choisissez au moins une plateforme.";
   }
   if (!Number.isFinite(input.scheduledMs)) {
@@ -248,6 +252,9 @@ export type CardTimeFields = {
   dateTime: string;
   tiktokTime: string;
   instagramTime: string;
+  // Optionnel (mode custom uniquement) : horaire YouTube par carte, symétrique de tiktokTime/
+  // instagramTime. Absent tant que l'UI n'expose pas la case YouTube (hors de ce lot).
+  youtubeTime?: string;
 };
 
 /**
@@ -269,13 +276,16 @@ export function effectiveTiktokTimeMs(
 }
 
 /** Un champ horaire d'une carte concerné par un contrôle (fenêtre morte…), avec son nom et sa valeur brute. */
-export type TimedField = { field: "dateTime" | "tiktokTime" | "instagramTime"; value: string };
+export type TimedField = {
+  field: "dateTime" | "tiktokTime" | "instagramTime" | "youtubeTime";
+  value: string;
+};
 
 /**
  * Champs horaires PERTINENTS d'une carte selon le mode de timing et les plateformes cochées :
  *  - offset/simultané : un seul champ partagé (`dateTime`), pertinent dès qu'au moins une plateforme
  *    est cochée (c'est le seul horaire que l'utilisateur voit dans ce mode) ;
- *  - custom : un champ par plateforme cochée (`tiktokTime`/`instagramTime`).
+ *  - custom : un champ par plateforme cochée (`tiktokTime`/`instagramTime`/`youtubeTime`).
  * Un champ grisé (plateforme non ciblée) n'est jamais renvoyé.
  */
 export function relevantTimeFields(card: CardTimeFields, timingMode: BulkTimingMode): TimedField[] {
@@ -283,9 +293,10 @@ export function relevantTimeFields(card: CardTimeFields, timingMode: BulkTimingM
     const fields: TimedField[] = [];
     if (card.platforms.tiktok) fields.push({ field: "tiktokTime", value: card.tiktokTime });
     if (card.platforms.instagram) fields.push({ field: "instagramTime", value: card.instagramTime });
+    if (card.platforms.youtube) fields.push({ field: "youtubeTime", value: card.youtubeTime ?? "" });
     return fields;
   }
-  if (card.platforms.tiktok || card.platforms.instagram) {
+  if (card.platforms.tiktok || card.platforms.instagram || card.platforms.youtube) {
     return [{ field: "dateTime", value: card.dateTime }];
   }
   return [];
