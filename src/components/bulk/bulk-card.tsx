@@ -25,12 +25,13 @@ export type BulkCardState = {
   isVideo: boolean;
   caption: string;
   hashtagsText: string;
-  platforms: { tiktok: boolean; instagram: boolean };
+  platforms: { tiktok: boolean; instagram: boolean; youtube: boolean };
   /** Horaire de base (mode offset/simultané), chaîne datetime-local. */
   dateTime: string;
   /** Horaires par plateforme (mode custom uniquement), chaînes datetime-local. */
   tiktokTime: string;
   instagramTime: string;
+  youtubeTime: string;
   /**
    * Vrai dès que l'utilisateur a édité un horaire de CETTE carte directement (saisie manuelle ou
    * correctif « → 7h10 »). Protège la carte d'un écrasement silencieux quand « Heure de départ »
@@ -68,6 +69,7 @@ export function BulkCard({
   timingMode,
   tiktokConnected,
   instagramConnected,
+  youtubeConnected,
   disabled,
   timezone,
   onChange,
@@ -78,6 +80,7 @@ export function BulkCard({
   timingMode: TimingUiMode;
   tiktokConnected: boolean;
   instagramConnected: boolean;
+  youtubeConnected: boolean;
   disabled: boolean;
   /** Fuseau de l'utilisateur (User.timezone, replié sur Europe/Paris) — jamais celui du navigateur/runtime. */
   timezone: string;
@@ -107,14 +110,20 @@ export function BulkCard({
   const quietFields = isScheduled ? [] : cardQuietWindowFields(card, timingMode, timezone);
   const quietByField = (field: TimedField["field"]) => quietFields.find((f) => f.field === field);
 
-  /** Applique suggestWakeTime au champ concerné et marque la carte comme éditée manuellement. */
+  /**
+   * Applique suggestWakeTime au champ concerné et marque la carte comme éditée manuellement.
+   * ⚠️ Bug corrigé (lot D, signalé par la vague 1) : la branche par défaut routait TOUT champ non
+   * dateTime/tiktokTime vers instagramTime — routait donc youtubeTime dans instagramTime dès que ce
+   * 3e champ a été introduit. Chaque champ a désormais SA branche explicite.
+   */
   function applyWakeTime(target: TimedField) {
     const current = localToDate(target.value, timezone);
     if (!current) return; // ne devrait pas arriver : le champ vient de cardQuietWindowFields (déjà valide)
     const nextValue = dateToLocal(suggestWakeTime(current, timezone), timezone);
     if (target.field === "dateTime") onChange({ dateTime: nextValue, timeTouched: true });
     else if (target.field === "tiktokTime") onChange({ tiktokTime: nextValue, timeTouched: true });
-    else onChange({ instagramTime: nextValue, timeTouched: true });
+    else if (target.field === "instagramTime") onChange({ instagramTime: nextValue, timeTouched: true });
+    else onChange({ youtubeTime: nextValue, timeTouched: true });
   }
 
   return (
@@ -237,9 +246,9 @@ export function BulkCard({
               />
             </div>
 
-            {/* Horaires : 1 champ (offset/simultané) ou 2 champs par plateforme (custom) */}
+            {/* Horaires : 1 champ (offset/simultané) ou 3 champs par plateforme (custom) */}
             {timingMode === "custom" ? (
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label htmlFor={`tiktok-time-${card.key}`} className="text-xs font-semibold">
                     Heure TikTok
@@ -276,6 +285,24 @@ export function BulkCard({
                     />
                   )}
                 </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`youtube-time-${card.key}`} className="text-xs font-semibold">
+                    Heure YouTube
+                  </Label>
+                  <Input
+                    id={`youtube-time-${card.key}`}
+                    type="datetime-local"
+                    value={card.youtubeTime}
+                    disabled={locked || !card.platforms.youtube}
+                    onChange={(e) => onChange({ youtubeTime: e.target.value, timeTouched: true })}
+                  />
+                  {quietByField("youtubeTime") && (
+                    <QuietWindowNotice
+                      disabled={locked}
+                      onFix={() => applyWakeTime(quietByField("youtubeTime")!)}
+                    />
+                  )}
+                </div>
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -291,7 +318,7 @@ export function BulkCard({
                 />
                 {timingMode === "offset" && card.platforms.tiktok && card.platforms.instagram && (
                   <p className="text-[11.5px] text-muted-foreground">
-                    TikTok à cette heure, Instagram 5 min après.
+                    {`TikTok à cette heure, Instagram 5 min après${card.platforms.youtube ? ", YouTube 10 min après" : ""}.`}
                   </p>
                 )}
                 {quietByField("dateTime") && (
@@ -300,7 +327,7 @@ export function BulkCard({
               </div>
             )}
 
-            {/* Plateformes (les deux cochées par défaut, décochables indépendamment) */}
+            {/* Plateformes (cochées par défaut si connectées, décochables indépendamment) */}
             <div className="space-y-2">
               <Label className="text-xs font-semibold">Plateformes</Label>
               <div className="flex flex-wrap gap-4">
@@ -331,6 +358,24 @@ export function BulkCard({
                     Instagram{" "}
                     {!instagramConnected && (
                       <span className="text-muted-foreground">(non connecté)</span>
+                    )}
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`youtube-${card.key}`}
+                    checked={card.platforms.youtube}
+                    disabled={locked || !youtubeConnected || !card.isVideo}
+                    onCheckedChange={(checked) =>
+                      onChange({ platforms: { ...card.platforms, youtube: checked === true } })
+                    }
+                  />
+                  <Label htmlFor={`youtube-${card.key}`} className="text-[13.5px] font-normal">
+                    YouTube (Short){" "}
+                    {!youtubeConnected ? (
+                      <span className="text-muted-foreground">(non connecté)</span>
+                    ) : (
+                      !card.isVideo && <span className="text-muted-foreground">(vidéo requise)</span>
                     )}
                   </Label>
                 </div>

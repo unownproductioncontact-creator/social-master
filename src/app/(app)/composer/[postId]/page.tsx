@@ -56,6 +56,11 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
     name: displayNameFromStorageKey(m.storageKey),
     mimeType: m.mimeType,
     isVideo: m.mimeType.startsWith("video/"),
+    // Métadonnées pour les avertissements de compatibilité YouTube Short (durée/format).
+    durationSec: m.durationSec,
+    width: m.width,
+    height: m.height,
+    sizeBytes: m.sizeBytes,
   }));
 
   const isDraft = post.status === "DRAFT";
@@ -119,6 +124,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           mediaOptions={mediaOptions}
           instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
           tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
+          youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
           timezone={user?.timezone ?? "Europe/Paris"}
           servedPlatforms={servedPlatforms}
           initialPost={{
@@ -132,6 +138,10 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             targetInstagram: post.postTargets.some((t) => t.platform === "INSTAGRAM"),
             targetInstagramStory: post.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
             targetTiktok: post.postTargets.some((t) => t.platform === "TIKTOK"),
+            targetYoutube: post.postTargets.some((t) => t.platform === "YOUTUBE"),
+            youtubeTitle:
+              (post.postTargets.find((t) => t.platform === "YOUTUBE")?.platformOptions as { title?: string } | null)
+                ?.title ?? undefined,
             instagramCoverTimeMs:
               (post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions as { coverTimeMs?: number } | null)
                 ?.coverTimeMs ?? null,

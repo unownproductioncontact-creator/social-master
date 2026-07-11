@@ -11,8 +11,8 @@ type ConnectionAccount = {
   status: string;
 };
 
-/** Les deux plateformes gérées, dans l'ordre d'affichage. */
-const PLATFORMS: Array<"INSTAGRAM" | "TIKTOK"> = ["INSTAGRAM", "TIKTOK"];
+/** Les trois plateformes gérées, dans l'ordre d'affichage. */
+const PLATFORMS: Array<"INSTAGRAM" | "TIKTOK" | "YOUTUBE"> = ["INSTAGRAM", "TIKTOK", "YOUTUBE"];
 
 /**
  * Carte compacte « Connexions » (colonne droite de la maquette). Une ligne dense par plateforme :

@@ -31,8 +31,12 @@ import { scheduleManyPostsAction, type ScheduleManyInput } from "@/lib/actions/b
 import type { BulkQuotaInfo } from "@/lib/actions/bulk-info";
 import { getLastUsed, rememberHashtags, truncatePreview } from "@/lib/last-used";
 
-/** Clé sessionStorage versionnée (P2-6a) : bump la version (« -v2 », …) si le format change un jour. */
-const BULK_DRAFT_STORAGE_KEY = "bulk-draft-v1";
+/**
+ * Clé sessionStorage versionnée (P2-6a) : bump la version (« -v2 », …) si le format change un jour.
+ * Passée à v2 (lot D, 11/07/2026) : ajout de `platforms.youtube`/`youtubeTime`. Un ancien brouillon
+ * v1 n'est plus lu (nouvelle clé) — il est silencieusement ignoré plutôt que rejeté champ par champ.
+ */
+const BULK_DRAFT_STORAGE_KEY = "bulk-draft-v2";
 
 /** Valeur datetime-local par défaut : dans 1 h, arrondie à la minute. */
 function defaultDateTime(): string {
@@ -45,7 +49,7 @@ let cardCounter = 0;
 function makeCard(
   media: { mediaAssetId: string; name: string; url: string; thumbnailUrl: string | null; isVideo: boolean },
   base: string,
-  defaults: { tiktok: boolean; instagram: boolean }
+  defaults: { tiktok: boolean; instagram: boolean; youtube: boolean }
 ): BulkCardState {
   cardCounter += 1;
   return {
@@ -57,10 +61,17 @@ function makeCard(
     isVideo: media.isVideo,
     caption: "",
     hashtagsText: "",
-    platforms: { tiktok: defaults.tiktok, instagram: defaults.instagram },
+    platforms: {
+      tiktok: defaults.tiktok,
+      instagram: defaults.instagram,
+      // YouTube Shorts exige une vidéo : jamais coché par défaut sur une carte image, même connecté
+      // (sinon la carte partirait avec une combinaison invalide dès la 1re programmation).
+      youtube: defaults.youtube && media.isVideo,
+    },
     dateTime: base,
     tiktokTime: base,
     instagramTime: base,
+    youtubeTime: base,
     timeTouched: false,
     result: { status: "idle" },
   };
@@ -83,10 +94,11 @@ type PersistedBulkCard = {
   isVideo: boolean;
   caption: string;
   hashtagsText: string;
-  platforms: { tiktok: boolean; instagram: boolean };
+  platforms: { tiktok: boolean; instagram: boolean; youtube: boolean };
   dateTime: string;
   tiktokTime: string;
   instagramTime: string;
+  youtubeTime: string;
 };
 
 type PersistedBulkDraft = {
@@ -115,9 +127,11 @@ function isPersistedBulkCard(value: unknown): value is PersistedBulkCard {
     platforms !== null &&
     typeof platforms.tiktok === "boolean" &&
     typeof platforms.instagram === "boolean" &&
+    typeof platforms.youtube === "boolean" &&
     typeof v.dateTime === "string" &&
     typeof v.tiktokTime === "string" &&
-    typeof v.instagramTime === "string"
+    typeof v.instagramTime === "string" &&
+    typeof v.youtubeTime === "string"
   );
 }
 
@@ -155,6 +169,7 @@ function cardFromPersisted(p: PersistedBulkCard): BulkCardState {
     dateTime: p.dateTime,
     tiktokTime: p.tiktokTime,
     instagramTime: p.instagramTime,
+    youtubeTime: p.youtubeTime,
     timeTouched: false,
     result: { status: "idle" },
   };
@@ -164,12 +179,14 @@ export function BulkComposer({
   libraryMedia,
   instagramConnected,
   tiktokConnected,
+  youtubeConnected,
   initialQuota,
   timezone,
 }: {
   libraryMedia: LibraryMedia[];
   instagramConnected: boolean;
   tiktokConnected: boolean;
+  youtubeConnected: boolean;
   initialQuota: BulkQuotaInfo;
   /** Fuseau de l'utilisateur (User.timezone, replié sur Europe/Paris — P3-5b). */
   timezone: string;
@@ -177,8 +194,9 @@ export function BulkComposer({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
-  // Les deux plateformes cochées par défaut, mais seulement si connectées.
-  const platformDefaults = { tiktok: tiktokConnected, instagram: instagramConnected };
+  // Les trois plateformes cochées par défaut, mais seulement si connectées (YouTube en plus retombe
+  // à faux sur une carte non-vidéo, voir makeCard — un Short exige une vidéo).
+  const platformDefaults = { tiktok: tiktokConnected, instagram: instagramConnected, youtube: youtubeConnected };
 
   const [cards, setCards] = useState<BulkCardState[]>([]);
 
@@ -257,6 +275,7 @@ export function BulkComposer({
           dateTime: c.dateTime,
           tiktokTime: c.tiktokTime,
           instagramTime: c.instagramTime,
+          youtubeTime: c.youtubeTime,
         })),
         offsetEnabled,
         manualMode,
@@ -357,7 +376,7 @@ export function BulkComposer({
       prev.map((c) =>
         c.result.status === "scheduled" || c.timeTouched
           ? c
-          : { ...c, dateTime: value, tiktokTime: value, instagramTime: value }
+          : { ...c, dateTime: value, tiktokTime: value, instagramTime: value, youtubeTime: value }
       )
     );
   }
@@ -405,11 +424,11 @@ export function BulkComposer({
         if (c.result.status === "scheduled") return c;
         const t = result.times[i];
         i += 1;
-        // En mode custom, on remplit aussi les deux horaires par plateforme avec l'horaire espacé.
+        // En mode custom, on remplit aussi les trois horaires par plateforme avec l'horaire espacé.
         // « Espacer » écrase TOUT sans condition (contrairement à la sync « Heure de départ ») et
         // remet timeTouched à false : un futur changement de « Heure de départ » pourra de nouveau
         // resynchroniser ces cartes tant qu'elles ne sont pas rééditées individuellement.
-        return { ...c, dateTime: t, tiktokTime: t, instagramTime: t, timeTouched: false };
+        return { ...c, dateTime: t, tiktokTime: t, instagramTime: t, youtubeTime: t, timeTouched: false };
       });
     });
     toast.success("Horaires espacés appliqués.");
@@ -423,16 +442,18 @@ export function BulkComposer({
     for (const card of pendingCards) {
       // Résout l'horaire de base et les horaires par plateforme selon le mode.
       let baseIso: string | null;
-      let customTimes: { tiktok?: string; instagram?: string } | undefined;
+      let customTimes: { tiktok?: string; instagram?: string; youtube?: string } | undefined;
 
       if (timingMode === "custom") {
         const tkMs = card.platforms.tiktok ? localToMs(card.tiktokTime, timezone) : Number.POSITIVE_INFINITY;
         const igMs = card.platforms.instagram ? localToMs(card.instagramTime, timezone) : Number.POSITIVE_INFINITY;
-        const earliest = Math.min(tkMs, igMs);
+        const ytMs = card.platforms.youtube ? localToMs(card.youtubeTime, timezone) : Number.POSITIVE_INFINITY;
+        const earliest = Math.min(tkMs, igMs, ytMs);
         baseIso = Number.isFinite(earliest) ? new Date(earliest).toISOString() : null;
         customTimes = {
           tiktok: card.platforms.tiktok ? localToIso(card.tiktokTime, timezone) ?? undefined : undefined,
           instagram: card.platforms.instagram ? localToIso(card.instagramTime, timezone) ?? undefined : undefined,
+          youtube: card.platforms.youtube ? localToIso(card.youtubeTime, timezone) ?? undefined : undefined,
         };
       } else {
         baseIso = localToIso(card.dateTime, timezone);
@@ -443,7 +464,8 @@ export function BulkComposer({
         timingMode === "custom"
           ? Math.min(
               card.platforms.tiktok ? localToMs(card.tiktokTime, timezone) : Number.POSITIVE_INFINITY,
-              card.platforms.instagram ? localToMs(card.instagramTime, timezone) : Number.POSITIVE_INFINITY
+              card.platforms.instagram ? localToMs(card.instagramTime, timezone) : Number.POSITIVE_INFINITY,
+              card.platforms.youtube ? localToMs(card.youtubeTime, timezone) : Number.POSITIVE_INFINITY
             )
           : localToMs(card.dateTime, timezone);
 
@@ -586,6 +608,13 @@ export function BulkComposer({
           l'application : utilisez le bouton <span className="font-semibold text-foreground">Copier</span> de chaque carte,
           puis collez-la dans TikTok au moment de finaliser la publication.
         </p>
+      </div>
+
+      {/* Hint YouTube PERMANENT (bandeau, pas un toast) : le titre du Short est déduit automatiquement,
+          jamais saisi carte par carte en masse (V1, voir CLAUDE.md §25). */}
+      <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-[12.5px] text-muted-foreground">
+        <Info className="mt-0.5 size-4 shrink-0" />
+        <p>YouTube : le titre du Short = première ligne de la légende.</p>
       </div>
 
       {/* 2. Réglages du lot */}
@@ -771,6 +800,7 @@ export function BulkComposer({
               timingMode={timingMode}
               tiktokConnected={tiktokConnected}
               instagramConnected={instagramConnected}
+              youtubeConnected={youtubeConnected}
               disabled={isPending}
               timezone={timezone}
               onChange={(patch) => patchCard(card.key, patch)}

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { FileVideo, Moon } from "lucide-react";
+import { FileVideo, Moon, TriangleAlert } from "lucide-react";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,7 +15,15 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { savePostDraft, scheduleExistingPost } from "@/lib/actions/posts";
-import { computeInstagramContentType, computeTikTokContentType } from "@/lib/content-type";
+import {
+  computeInstagramContentType,
+  computeTikTokContentType,
+  computeYouTubeContentType,
+  youtubeTitleFallback,
+  resolveYouTubeTitle,
+  YOUTUBE_TITLE_MAX_LENGTH,
+} from "@/lib/content-type";
+import { checkYouTubeShortCompatibility } from "@/lib/media-validation";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
@@ -30,6 +38,11 @@ type MediaOption = {
   thumbnailUrl?: string | null;
   /** Nom de fichier lisible reconstitué depuis la clé de stockage. */
   name?: string;
+  /** Métadonnées média (depuis la DB) — servent aux avertissements de compatibilité YouTube Short. */
+  durationSec?: number | null;
+  width?: number | null;
+  height?: number | null;
+  sizeBytes?: number | null;
 };
 
 const IG_CONTENT_TYPE_LABELS: Record<string, string> = {
@@ -59,6 +72,7 @@ export function PostComposerForm({
   mediaOptions,
   instagramConnected,
   tiktokConnected,
+  youtubeConnected,
   timezone,
   initialPost,
   initialScheduleLocal,
@@ -67,6 +81,7 @@ export function PostComposerForm({
   mediaOptions: MediaOption[];
   instagramConnected: boolean;
   tiktokConnected: boolean;
+  youtubeConnected: boolean;
   /** Fuseau de l'utilisateur (UTC en base, saisie interprétée dans ce fuseau). */
   timezone: string;
   /**
@@ -83,6 +98,9 @@ export function PostComposerForm({
     targetInstagram?: boolean;
     targetInstagramStory?: boolean;
     targetTiktok?: boolean;
+    targetYoutube?: boolean;
+    /** Titre YouTube explicite déjà saisi (PostTarget.platformOptions.title) — vide sinon. */
+    youtubeTitle?: string;
     instagramCoverTimeMs?: number | null;
   };
   /** Valeur par défaut du champ de programmation (datetime-local, heure locale). Nouveau post seulement. */
@@ -95,6 +113,7 @@ export function PostComposerForm({
   const isEditingExisting = Boolean(initialPost?.id);
   const servedInstagram = servedPlatforms?.includes("INSTAGRAM") ?? false;
   const servedTiktok = servedPlatforms?.includes("TIKTOK") ?? false;
+  const servedYoutube = servedPlatforms?.includes("YOUTUBE") ?? false;
 
   const [caption, setCaption] = useState(initialPost?.caption ?? "");
   const [hashtagsText, setHashtagsText] = useState((initialPost?.hashtags ?? []).join(" "));
@@ -106,6 +125,8 @@ export function PostComposerForm({
   const [targetInstagram, setTargetInstagram] = useState(initialPost?.targetInstagram ?? instagramConnected);
   const [targetInstagramStory, setTargetInstagramStory] = useState(initialPost?.targetInstagramStory ?? false);
   const [targetTiktok, setTargetTiktok] = useState(initialPost?.targetTiktok ?? tiktokConnected);
+  const [targetYoutube, setTargetYoutube] = useState(initialPost?.targetYoutube ?? youtubeConnected);
+  const [youtubeTitle, setYoutubeTitle] = useState(initialPost?.youtubeTitle ?? "");
   const [coverTimeMs, setCoverTimeMs] = useState<number | null>(initialPost?.instagramCoverTimeMs ?? null);
   const [dateTime, setDateTime] = useState(initialScheduleLocal ?? "");
   // Vrai dès que l'utilisateur modifie lui-même le champ de programmation (saisie ou raccourci) — sert
@@ -126,6 +147,7 @@ export function PostComposerForm({
       ? computeInstagramContentType(selectedMedia.length, mediaMeta[0].isVideo, targetInstagramStory)
       : null;
   const tiktokContentType = mediaMeta.length > 0 ? computeTikTokContentType(mediaMeta) : null;
+  const youtubeContentType = mediaMeta.length > 0 ? computeYouTubeContentType(mediaMeta) : null;
 
   // Valeurs effectives des cases (P1-2) : une plateforme servie est forcée cochée ; TikTok ne peut pas
   // rester coché sur une combinaison de médias qu'il refuse (sinon la sauvegarde échouerait).
@@ -134,6 +156,27 @@ export function PostComposerForm({
   const igDisabled = !instagramConnected || servedInstagram;
   const tiktokChecked = servedTiktok || (targetTiktok && tiktokEligible);
   const tiktokDisabled = !tiktokConnected || servedTiktok || tiktokContentType === null;
+  // YouTube (Short) : éligible seulement avec EXACTEMENT 1 vidéo (computeYouTubeContentType). Même
+  // logique servie/verrouillée que les deux autres. Le champ « Titre YouTube » n'apparaît que quand la
+  // case est cochée ET actionnable (connecté, média valide, pas déjà publié).
+  const youtubeEligible = youtubeConnected && youtubeContentType !== null;
+  const youtubeChecked = servedYoutube || (targetYoutube && youtubeEligible);
+  const youtubeDisabled = !youtubeConnected || servedYoutube || youtubeContentType === null;
+  const youtubeTitleVisible = youtubeChecked && !youtubeDisabled;
+
+  // Avertissements média YouTube (non bloquants) : > 3 min ou horizontal → « pas classé Short ». Calculés
+  // seulement quand la case est cochée et qu'un unique média vidéo est sélectionné (sinon rien à dire).
+  const youtubeMediaWarnings = useMemo(() => {
+    if (!youtubeChecked || selectedMedia.length !== 1 || !selectedMedia[0].isVideo) return [];
+    const m = selectedMedia[0];
+    return checkYouTubeShortCompatibility({
+      mimeType: m.mimeType,
+      sizeBytes: m.sizeBytes ?? 0,
+      durationSec: m.durationSec ?? null,
+      width: m.width ?? null,
+      height: m.height ?? null,
+    }).filter((issue) => issue.level === "warning");
+  }, [youtubeChecked, selectedMedia]);
 
   // Avertissement fenêtre morte 23h–7h (P1-3) : l'heure saisie est interprétée dans le fuseau utilisateur.
   const quietWarning = useMemo(() => {
@@ -197,8 +240,10 @@ export function PostComposerForm({
         targetInstagram: igChecked,
         targetInstagramStory,
         targetTiktok: tiktokChecked,
-        // Câblé en vague 2 (checkbox + titre YouTube) — placeholder pour garder le contrat de savePostDraft.
-        targetYoutube: false,
+        targetYoutube: youtubeChecked,
+        // Titre envoyé UNIQUEMENT s'il est saisi (trim) et pertinent (case cochée/actionnable) : sinon le
+        // worker reconstruit le repli (1re ligne de légende via youtubeTitleFallback), jamais stocké vide.
+        youtubeTitle: youtubeTitleVisible && youtubeTitle.trim() ? youtubeTitle.trim() : undefined,
         instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
       });
       if (result.error) {
@@ -311,6 +356,19 @@ export function PostComposerForm({
               })}
             </div>
           )}
+          {youtubeMediaWarnings.length > 0 && (
+            <ul className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+              {youtubeMediaWarnings.map((issue, i) => (
+                <li
+                  key={i}
+                  className="flex items-start gap-1.5 text-[12px] leading-snug text-amber-700 dark:text-amber-400"
+                >
+                  <TriangleAlert className="mt-px size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
+                  <span>{issue.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -417,6 +475,28 @@ export function PostComposerForm({
               <p className="ml-6 text-[11.5px] text-muted-foreground">Déjà envoyé en brouillon TikTok.</p>
             )}
           </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="target-youtube"
+                checked={youtubeChecked}
+                disabled={youtubeDisabled}
+                onCheckedChange={(checked) => setTargetYoutube(checked === true)}
+              />
+              <Label htmlFor="target-youtube" className="text-[13.5px] font-normal">
+                YouTube (Short){" "}
+                {!youtubeConnected && <span className="text-muted-foreground">(non connecté)</span>}
+                {youtubeConnected && !servedYoutube && youtubeContentType === null && selectedMedia.length > 0 && (
+                  <span className="text-muted-foreground">— YouTube Shorts : une seule vidéo</span>
+                )}
+              </Label>
+            </div>
+            {servedYoutube && (
+              <p className="ml-6 text-[11.5px] text-muted-foreground">
+                Déjà publié sur YouTube — ne sera pas republié.
+              </p>
+            )}
+          </div>
         </div>
 
         {targetInstagram && !servedInstagram && igContentType === "REEL" && selectedMedia[0]?.isVideo && (
@@ -426,6 +506,28 @@ export function PostComposerForm({
             valueMs={coverTimeMs}
             onChange={setCoverTimeMs}
           />
+        )}
+
+        {youtubeTitleVisible && (
+          <div className="space-y-1.5 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="youtube-title" className="text-xs font-semibold">
+                Titre YouTube
+              </Label>
+              <span className="text-[11.5px] text-muted-foreground">
+                {youtubeTitle.length}/{YOUTUBE_TITLE_MAX_LENGTH}
+              </span>
+            </div>
+            <Input
+              id="youtube-title"
+              value={youtubeTitle}
+              onChange={(e) => setYoutubeTitle(e.target.value.slice(0, YOUTUBE_TITLE_MAX_LENGTH))}
+              placeholder={youtubeTitleFallback(caption)}
+            />
+            <p className="text-[11.5px] text-muted-foreground">
+              Laissé vide : la première ligne de la légende sera utilisée.
+            </p>
+          </div>
         )}
 
         {!isEditingExisting && (
@@ -498,12 +600,21 @@ export function PostComposerForm({
           <TabsList>
             <TabsTrigger value="instagram">Instagram</TabsTrigger>
             <TabsTrigger value="tiktok">TikTok</TabsTrigger>
+            <TabsTrigger value="youtube">YouTube</TabsTrigger>
           </TabsList>
           <TabsContent value="instagram">
             <PreviewMock media={selectedMedia[0] ?? null} extraCount={selectedMedia.length - 1} caption={fullCaption} />
           </TabsContent>
           <TabsContent value="tiktok">
             <PreviewMock media={selectedMedia[0] ?? null} extraCount={selectedMedia.length - 1} caption={fullCaption} />
+          </TabsContent>
+          <TabsContent value="youtube">
+            <PreviewMock
+              media={selectedMedia[0] ?? null}
+              extraCount={selectedMedia.length - 1}
+              caption={fullCaption}
+              title={resolveYouTubeTitle(youtubeTitle, caption)}
+            />
           </TabsContent>
         </Tabs>
       </div>
@@ -576,7 +687,18 @@ function CoverFramePicker({
   );
 }
 
-function PreviewMock({ media, extraCount, caption }: { media: MediaOption | null; extraCount: number; caption: string }) {
+function PreviewMock({
+  media,
+  extraCount,
+  caption,
+  title,
+}: {
+  media: MediaOption | null;
+  extraCount: number;
+  caption: string;
+  /** Titre affiché en gras au-dessus de la description (aperçu YouTube). Absent pour IG/TikTok. */
+  title?: string;
+}) {
   return (
     <Card className="mx-auto max-w-xs overflow-hidden py-0">
       <div className="relative flex aspect-9/16 items-center justify-center bg-muted">
@@ -599,7 +721,8 @@ function PreviewMock({ media, extraCount, caption }: { media: MediaOption | null
           </Badge>
         )}
       </div>
-      <CardContent className="py-3">
+      <CardContent className="space-y-1 py-3">
+        {title && <p className="text-[12.5px] font-semibold text-foreground">{title}</p>}
         <p className="whitespace-pre-wrap text-[11.5px] text-muted-foreground">{caption || "Votre légende apparaîtra ici."}</p>
       </CardContent>
     </Card>

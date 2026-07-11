@@ -60,6 +60,7 @@ export default async function BulkComposerPage() {
         libraryMedia={libraryMedia}
         instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
         tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
+        youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
         initialQuota={quota}
         timezone={timezone}
       />

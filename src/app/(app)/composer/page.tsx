@@ -62,6 +62,11 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
     name: displayNameFromStorageKey(m.storageKey),
     mimeType: m.mimeType,
     isVideo: m.mimeType.startsWith("video/"),
+    // Métadonnées pour les avertissements de compatibilité YouTube Short (durée/format).
+    durationSec: m.durationSec,
+    width: m.width,
+    height: m.height,
+    sizeBytes: m.sizeBytes,
   }));
 
   // Pré-remplissage d'un NOUVEAU brouillon (jamais une édition du post source) :
@@ -77,6 +82,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
     });
     if (source && source.userId === session.userId) {
       const igTarget = source.postTargets.find((t) => t.platform === "INSTAGRAM");
+      const ytTarget = source.postTargets.find((t) => t.platform === "YOUTUBE");
       initialPost = {
         caption: source.caption,
         hashtags: source.hashtags,
@@ -88,6 +94,8 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         targetInstagram: source.postTargets.some((t) => t.platform === "INSTAGRAM"),
         targetInstagramStory: source.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
         targetTiktok: source.postTargets.some((t) => t.platform === "TIKTOK"),
+        targetYoutube: source.postTargets.some((t) => t.platform === "YOUTUBE"),
+        youtubeTitle: (ytTarget?.platformOptions as { title?: string } | null)?.title ?? undefined,
         instagramCoverTimeMs:
           (igTarget?.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs ?? null,
       };
@@ -116,6 +124,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         mediaOptions={mediaOptions}
         instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
         tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
+        youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
         timezone={timezone}
         initialPost={initialPost}
         initialScheduleLocal={defaultScheduleLocal(timezone, dateParam)}

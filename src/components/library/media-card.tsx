@@ -12,6 +12,7 @@ import {
   checkInstagramReelCompatibility,
   checkInstagramImageCompatibility,
   checkTikTokVideoCompatibility,
+  checkYouTubeShortCompatibility,
 } from "@/lib/media-validation";
 import { cn } from "@/lib/utils";
 
@@ -66,6 +67,7 @@ export function MediaCard({
     ? [
         ...checkInstagramReelCompatibility(meta).map((i) => ({ platform: "Instagram (Reel)", ...i })),
         ...checkTikTokVideoCompatibility(meta).map((i) => ({ platform: "TikTok", ...i })),
+        ...checkYouTubeShortCompatibility(meta).map((i) => ({ platform: "YouTube (Short)", ...i })),
       ]
     : checkInstagramImageCompatibility(meta).map((i) => ({ platform: "Instagram", ...i }));
   const hasErrors = diagnostics.some((d) => d.level === "error");
