@@ -4,7 +4,7 @@
 > **Règle** : mis à jour à CHAQUE jalon ; commit local à chaque jalon vérifié (`tsc` vert minimum) ; **push uniquement aux jalons INTÉGRATION** (chaque push = déploiement Render).
 > La SPEC du chantier est dans `CLAUDE.md §25` (faits API vérifiés + décisions actées). Le plan global : vague 1 moteur → vague 2 UI → intégration (tsc+tests+build) → commit+push+deploy+vérif prod → checklist Google Cloud user.
 
-## État courant : ✅ J3 FAIT (code livré, poussé, déployé) — reste J4 (actions user Google Cloud)
+## État courant : ✅ J4 QUASI FAIT — chaîne @Pokemoha connectée EN PROD (13/07). Reste 1 test empirique : publier un vrai Short.
 
 - Vague 2 : run `wf_9da43437-ba4`, script `/Users/mohamed/.claude/projects/-Users-mohamed-social-master/a0393529-ad6d-4567-8874-d9f1a3a3b2f3/workflows/scripts/youtube-shorts-vague-2-wf_9da43437-ba4.js`
 - **Reprise après coupure** : `Workflow({ scriptPath: <ci-dessus>, resumeFromRunId: "wf_9da43437-ba4" })` — sinon relire J2 ci-dessous (contrats J1→J2 notés) et relancer les lots C/D.
@@ -36,10 +36,10 @@ Enums Prisma `Platform.YOUTUBE` + `PostContentType.YOUTUBE_SHORT` (+ `prisma gen
 ### ✅ J3 — INTÉGRATION (11/07 ~12h05)
 tsc + `npm test` complet + `npm run build` + revue rapide du diff → commit final → **push** (déploiement Render auto) → vérifier `/api/healthz` (commit) + pages publiques → màj `CLAUDE.md` (§25 statut livré), mémoire, tâche #36, suppression de ce fichier (ou passage en « terminé »).
 
-### ⬜ J4 — Actions USER (hors code) + tests empiriques jour 1
-1. Google Cloud (projet Kiibiki) : écran de consentement → ajouter scope `youtube.upload` ; **Publishing status = In production** (PAS Testing : refresh tokens 7 jours sinon) ; créer client OAuth « Social Master » (Web) redirect `https://social-master-jitq.onrender.com/api/oauth/youtube/callback` ; poser `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` dans Render.
-2. Connecter la chaîne dans /connections (écran « app non validée » attendu → Paramètres avancés → Continuer).
-3. Tests empiriques : vidéo verticale <3 min → étagère Shorts ? refresh token >7 j ? plafond par chaîne ?
+### ✅ J4 — Actions USER (13/07/2026) — connexion validée en prod
+1. ✅ Google Cloud (projet `secure-site-501012-s0`, celui de Kiibiki) : app passée **En production**, scopes `youtube.upload`+`youtube.readonly` ajoutés (validation Google non demandée — écran « non vérifiée » assumé), client OAuth Web « Social Master » créé (redirect `…/api/oauth/youtube/callback`). `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` posés sur Render par le user (1er essai « non configuré » = redeploy pas fini / nom ; corrigé).
+2. ✅ **Chaîne connectée en prod** : `@Pokemoha` (CREATOR). Bouton « Vérifier » testé → OK (valide le health-check YouTube refresh-puis-relire avec un vrai token Google).
+3. ⏳ **RESTE (test empirique, à faire par le user)** : programmer/publier une vraie vidéo verticale <3 min → confirmer qu'elle atterrit dans l'étagère **Shorts** de la chaîne ; sur la durée : refresh token survit >7 j (garanti par le statut production) ; plafond d'upload par chaîne (chaîne établie a priori OK). C'est une PUBLICATION PUBLIQUE → décision + vidéo du user.
 
 ## Incidents notés
 - 11/07 ~01h20 : vague 1 morte en vol (« API Error: Connection closed mid-response », les 2 agents) → travail partiel conservé, tsc réparé (placeholder J0bis).
