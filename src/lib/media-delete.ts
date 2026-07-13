@@ -64,3 +64,53 @@ export async function deleteMediaAssetForUser(
 
   return {};
 }
+
+/**
+ * Purge IMMÉDIATE des médias d'un post qui vient d'être PUBLIÉ, quand le propriétaire a choisi la
+ * rétention « Dès la publication » (`User.mediaRetentionDays === 0`). Après publication, le fichier R2
+ * n'a plus d'utilité (Instagram/TikTok/YouTube en ont chacun leur propre copie) — on le supprime tout
+ * de suite plutôt que d'attendre le cron quotidien.
+ *
+ * Appelée depuis le worker (src/worker/publish-job.ts) après `recomputePostStatus === "PUBLISHED"`.
+ * Un média n'est supprimé que si TOUS les posts qui l'utilisent sont `PUBLISHED` (un média partagé
+ * avec un brouillon/programmé encore en attente est conservé). Best-effort : ne jette jamais (ne doit
+ * pas faire échouer le job de publication) ; requêtes séquentielles (moteur prisma dev, cf. §15).
+ * Le cron quotidien reste le filet de sécurité si cette purge échoue ou si le worker redémarre.
+ */
+export async function purgeMediaForPublishedPost(postId: string): Promise<void> {
+  const post = await db.post.findUnique({
+    where: { id: postId },
+    select: {
+      userId: true,
+      user: { select: { mediaRetentionDays: true } },
+      postMedia: { select: { mediaAssetId: true } },
+    },
+  });
+  // Seul le mode « Dès la publication » (0) déclenche la purge immédiate ; les paliers 7/30/90 restent
+  // gérés par le cron quotidien, et null (Jamais) ne purge rien.
+  if (!post || post.user.mediaRetentionDays !== 0) return;
+
+  const mediaIds = [...new Set(post.postMedia.map((pm) => pm.mediaAssetId))];
+  for (const mediaId of mediaIds) {
+    try {
+      const media = await db.mediaAsset.findUnique({
+        where: { id: mediaId },
+        select: { status: true, postMedia: { select: { post: { select: { status: true } } } } },
+      });
+      if (!media || media.status !== "READY") continue;
+      const posts = media.postMedia.map((pm) => pm.post);
+      // Ne purge que si TOUS les posts partageant ce média sont publiés (aucun brouillon/programmé/échec).
+      const allPublished = posts.length > 0 && posts.every((p) => p.status === "PUBLISHED");
+      if (!allPublished) continue;
+
+      const result = await deleteMediaAssetForUser(post.userId, mediaId);
+      if (result.error) {
+        console.warn(`[purge-immédiate] média ${mediaId} (post ${postId}) : ${result.error}`);
+      } else {
+        console.log(`[purge-immédiate] média ${mediaId} supprimé après publication du post ${postId}`);
+      }
+    } catch (err) {
+      console.error(`[purge-immédiate] exception sur le média ${mediaId} (post ${postId})`, err);
+    }
+  }
+}

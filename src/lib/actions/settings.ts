@@ -29,8 +29,8 @@ export async function updateProfile(input: z.infer<typeof UpdateProfileSchema>):
 }
 
 const UpdateMediaRetentionSchema = z.object({
-  // null = désactivé ; les seuls paliers proposés dans l'UI sont 7 / 30 / 90 jours.
-  mediaRetentionDays: z.union([z.literal(7), z.literal(30), z.literal(90), z.null()]),
+  // null = Jamais ; 0 = Dès la publication (purge immédiate dans le worker) ; 7 / 30 / 90 = après N jours.
+  mediaRetentionDays: z.union([z.literal(0), z.literal(7), z.literal(30), z.literal(90), z.null()]),
 });
 
 export type UpdateMediaRetentionResult = { error?: string };

@@ -24,15 +24,19 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * Retourne les identifiants des médias purgeables : uniquement ceux dont TOUTES les publications
  * sont parties (`allPostsResolved`), aucune publication en attente (`inUseByPendingPost` faux), et
  * dont la dernière publication est antérieure à `now − retentionDays`. Un média jamais utilisé
- * (`lastPublishedAt` null) n'est JAMAIS purgé — prudence délibérée. Une rétention nulle ou négative
- * ne purge rien (on ne veut jamais tout supprimer par erreur de configuration).
+ * (`lastPublishedAt` null) n'est JAMAIS purgé — prudence délibérée.
+ *
+ * `retentionDays === 0` = mode « Dès la publication » : le cutoff vaut `now`, donc tout média
+ * entièrement publié (avant l'instant présent) est purgeable — c'est le filet de sécurité quotidien
+ * du mode immédiat (la purge en temps réel se fait dans le worker, cf. purgeMediaForPublishedPost).
+ * Une rétention NÉGATIVE ou non finie ne purge rien (garde-fou anti-configuration erronée).
  */
 export function selectPurgeableMedia(
   assets: RetentionCandidate[],
   retentionDays: number,
   now: Date
 ): string[] {
-  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return [];
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) return [];
 
   const cutoffMs = now.getTime() - retentionDays * MS_PER_DAY;
 

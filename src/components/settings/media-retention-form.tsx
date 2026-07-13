@@ -9,14 +9,17 @@ import { updateMediaRetention } from "@/lib/actions/settings";
 
 const OPTIONS = [
   { value: "never", label: "Jamais" },
+  { value: "0", label: "Dès la publication" },
   { value: "7", label: "7 jours" },
   { value: "30", label: "30 jours" },
   { value: "90", label: "90 jours" },
 ] as const;
 
 /** Mappe la valeur du <select> (chaîne) vers le palier attendu par la Server Action. */
-function toRetentionDays(value: string): 7 | 30 | 90 | null {
+function toRetentionDays(value: string): 0 | 7 | 30 | 90 | null {
   switch (value) {
+    case "0":
+      return 0;
     case "7":
       return 7;
     case "30":
@@ -63,8 +66,9 @@ export function MediaRetentionForm({ mediaRetentionDays }: { mediaRetentionDays:
         </Select>
       </div>
       <p className="text-[12px] text-muted-foreground">
-        Seuls les médias dont toutes les publications sont parties sont concernés. Les fichiers sont
-        supprimés du stockage.
+        « Dès la publication » retire le fichier aussitôt le post entièrement publié ; sinon après le
+        délai choisi. Seuls les médias dont <span className="font-medium text-foreground">toutes</span> les
+        publications sont parties sont concernés — l'historique et les liens vers les posts restent intacts.
       </p>
       <Button onClick={handleSave} disabled={isPending}>
         {isPending ? "Enregistrement…" : "Enregistrer"}

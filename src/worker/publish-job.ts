@@ -6,6 +6,7 @@ import { getPublicMediaUrl } from "@/lib/storage";
 import { ensureJpegVersion } from "@/lib/image-convert";
 import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
 import { recomputePostStatus } from "@/lib/post-status";
+import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { publishTikTokDraftVideo, publishTikTokDraftPhoto } from "@/lib/providers/tiktok";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
@@ -179,7 +180,15 @@ async function processTarget(postTargetId: string): Promise<void> {
       detail: { postId: target.postId },
     },
   });
-  await recomputePostStatus(target.postId);
+  const resolvedStatus = await recomputePostStatus(target.postId);
+  // Purge immédiate des médias devenus inutiles si le post est entièrement publié ET que le
+  // propriétaire a choisi la rétention « Dès la publication » (no-op sinon). Best-effort : ne doit
+  // jamais faire échouer la publication déjà réussie.
+  if (resolvedStatus === "PUBLISHED") {
+    await purgeMediaForPublishedPost(target.postId).catch((err) =>
+      console.error(`[publish-job] purge immédiate échouée (post ${target.postId})`, err)
+    );
+  }
 }
 
 async function markFailure(

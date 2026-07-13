@@ -57,11 +57,21 @@ describe("selectPurgeableMedia", () => {
     expect(selectPurgeableMedia(assets, 30, NOW)).toEqual([]);
   });
 
-  it("une rétention nulle, négative ou non finie ne purge rien", () => {
+  it("une rétention négative ou non finie ne purge rien (garde-fou)", () => {
     const assets = [candidate({ id: "a" })];
-    expect(selectPurgeableMedia(assets, 0, NOW)).toEqual([]);
     expect(selectPurgeableMedia(assets, -7, NOW)).toEqual([]);
     expect(selectPurgeableMedia(assets, Number.NaN, NOW)).toEqual([]);
+  });
+
+  it("mode « Dès la publication » (0) : purge tout média entièrement publié, mais garde les mêmes garde-fous", () => {
+    const assets = [
+      candidate({ id: "published-old", lastPublishedAt: new Date(NOW.getTime() - 100 * DAY) }),
+      candidate({ id: "published-1s-ago", lastPublishedAt: new Date(NOW.getTime() - 1000) }),
+      candidate({ id: "pending", allPostsResolved: false, inUseByPendingPost: true }),
+      candidate({ id: "unused", allPostsResolved: false, lastPublishedAt: null }),
+    ];
+    // Les publiés partent (cutoff = now), le brouillon et le jamais-utilisé sont conservés.
+    expect(selectPurgeableMedia(assets, 0, NOW)).toEqual(["published-old", "published-1s-ago"]);
   });
 
   it("respecte les différents paliers de rétention (7 / 30 / 90 jours)", () => {
