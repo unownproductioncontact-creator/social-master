@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
@@ -193,11 +193,11 @@ export function SchedulePanel({
               <Label htmlFor="scheduled-at" className="text-xs font-semibold">
                 Date et heure ({timezone})
               </Label>
-              <Input
+              <DateTimePicker
                 id="scheduled-at"
-                type="datetime-local"
                 value={dateTime}
-                onChange={(e) => setDateTime(e.target.value)}
+                onChange={setDateTime}
+                timezone={timezone}
               />
             </div>
             <QuietWindowNotice value={dateTime} timezone={timezone} onShiftToWakeTime={setDateTime} />
@@ -235,11 +235,11 @@ export function SchedulePanel({
                     <Label htmlFor="reschedule-at" className="text-xs font-semibold">
                       Nouvelle date et heure ({timezone})
                     </Label>
-                    <Input
+                    <DateTimePicker
                       id="reschedule-at"
-                      type="datetime-local"
                       value={rescheduleValue}
-                      onChange={(e) => setRescheduleValue(e.target.value)}
+                      onChange={setRescheduleValue}
+                      timezone={timezone}
                     />
                   </div>
                   <QuietWindowNotice value={rescheduleValue} timezone={timezone} onShiftToWakeTime={setRescheduleValue} />

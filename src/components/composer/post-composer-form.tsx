@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -536,11 +537,11 @@ export function PostComposerForm({
               <Label htmlFor="composer-schedule" className="text-xs font-semibold">
                 Programmation ({timezone})
               </Label>
-              <Input
+              <DateTimePicker
                 id="composer-schedule"
-                type="datetime-local"
                 value={dateTime}
-                onChange={(e) => updateDateTime(e.target.value)}
+                onChange={updateDateTime}
+                timezone={timezone}
               />
             </div>
             <div className="flex flex-wrap gap-1.5">

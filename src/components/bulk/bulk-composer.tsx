@@ -7,6 +7,7 @@ import { Layers, Info, Plus, Loader2, Moon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -714,11 +715,11 @@ export function BulkComposer({
                   <Label htmlFor="start-time" className="text-xs font-semibold">
                     Heure de départ
                   </Label>
-                  <Input
+                  <DateTimePicker
                     id="start-time"
-                    type="datetime-local"
                     value={startTime}
-                    onChange={(e) => handleStartTimeChange(e.target.value)}
+                    onChange={handleStartTimeChange}
+                    timezone={timezone}
                   />
                 </div>
                 <div className="space-y-1.5">

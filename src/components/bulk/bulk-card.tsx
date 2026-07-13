@@ -6,6 +6,7 @@ import { FileVideo, ImageIcon, Copy, Check, X, ExternalLink, Moon } from "lucide
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -253,12 +254,12 @@ export function BulkCard({
                   <Label htmlFor={`tiktok-time-${card.key}`} className="text-xs font-semibold">
                     Heure TikTok
                   </Label>
-                  <Input
+                  <DateTimePicker
                     id={`tiktok-time-${card.key}`}
-                    type="datetime-local"
                     value={card.tiktokTime}
                     disabled={locked || !card.platforms.tiktok}
-                    onChange={(e) => onChange({ tiktokTime: e.target.value, timeTouched: true })}
+                    onChange={(v) => onChange({ tiktokTime: v, timeTouched: true })}
+                    timezone={timezone}
                   />
                   {quietByField("tiktokTime") && (
                     <QuietWindowNotice
@@ -271,12 +272,12 @@ export function BulkCard({
                   <Label htmlFor={`instagram-time-${card.key}`} className="text-xs font-semibold">
                     Heure Instagram
                   </Label>
-                  <Input
+                  <DateTimePicker
                     id={`instagram-time-${card.key}`}
-                    type="datetime-local"
                     value={card.instagramTime}
                     disabled={locked || !card.platforms.instagram}
-                    onChange={(e) => onChange({ instagramTime: e.target.value, timeTouched: true })}
+                    onChange={(v) => onChange({ instagramTime: v, timeTouched: true })}
+                    timezone={timezone}
                   />
                   {quietByField("instagramTime") && (
                     <QuietWindowNotice
@@ -289,12 +290,12 @@ export function BulkCard({
                   <Label htmlFor={`youtube-time-${card.key}`} className="text-xs font-semibold">
                     Heure YouTube
                   </Label>
-                  <Input
+                  <DateTimePicker
                     id={`youtube-time-${card.key}`}
-                    type="datetime-local"
                     value={card.youtubeTime}
                     disabled={locked || !card.platforms.youtube}
-                    onChange={(e) => onChange({ youtubeTime: e.target.value, timeTouched: true })}
+                    onChange={(v) => onChange({ youtubeTime: v, timeTouched: true })}
+                    timezone={timezone}
                   />
                   {quietByField("youtubeTime") && (
                     <QuietWindowNotice
@@ -309,12 +310,12 @@ export function BulkCard({
                 <Label htmlFor={`date-${card.key}`} className="text-xs font-semibold">
                   Date et heure de publication
                 </Label>
-                <Input
+                <DateTimePicker
                   id={`date-${card.key}`}
-                  type="datetime-local"
                   value={card.dateTime}
                   disabled={locked}
-                  onChange={(e) => onChange({ dateTime: e.target.value, timeTouched: true })}
+                  onChange={(v) => onChange({ dateTime: v, timeTouched: true })}
+                  timezone={timezone}
                 />
                 {timingMode === "offset" && card.platforms.tiktok && card.platforms.instagram && (
                   <p className="text-[11.5px] text-muted-foreground">
