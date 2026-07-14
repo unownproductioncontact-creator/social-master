@@ -15,7 +15,8 @@ import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { savePostDraft, scheduleExistingPost } from "@/lib/actions/posts";
+import { savePostDraft, scheduleExistingPost, publishPostNowAction } from "@/lib/actions/posts";
+import { PublishNowButton } from "@/components/composer/publish-now-button";
 import {
   computeInstagramContentType,
   computeTikTokContentType,
@@ -226,7 +227,7 @@ export function PostComposerForm({
    * dans la foulée (P1-6b). Si la programmation échoue APRÈS un enregistrement réussi, le brouillon
    * existe déjà : on redirige vers sa page d'édition (le SchedulePanel y permet de reprendre).
    */
-  function submit(mode: "schedule" | "draft") {
+  function submit(mode: "schedule" | "draft" | "now") {
     const hashtags = hashtagsText
       .split(/[\s,]+/)
       .map((h) => h.trim().replace(/^#/, ""))
@@ -260,6 +261,19 @@ export function PostComposerForm({
       rememberHashtags(hashtagsText);
       const hourPart = dateTime.trim() !== "" ? dateTime.split("T")[1] : undefined;
       if (hourPart) rememberScheduleHour(hourPart);
+
+      // « Publier maintenant » : publication immédiate (ignore le champ horaire).
+      if (mode === "now") {
+        const publishResult = await publishPostNowAction({ postId: savedId, timezone });
+        if (publishResult.error) {
+          toast.error(`Brouillon enregistré, mais la publication immédiate a échoué : ${publishResult.error} Reprenez ci-dessous.`);
+        } else {
+          toast.success("Publication lancée — elle part maintenant.");
+        }
+        router.push(`/composer/${savedId}`);
+        router.refresh();
+        return;
+      }
 
       const shouldSchedule = mode === "schedule" && dateTime.trim() !== "";
       if (!shouldSchedule) {
@@ -580,10 +594,16 @@ export function PostComposerForm({
             {isPending ? "Enregistrement…" : "Enregistrer le brouillon"}
           </Button>
         ) : (
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <Button onClick={() => submit("schedule")} disabled={isPending || mediaAssetIds.length === 0} className="w-full sm:w-auto">
               {primaryLabel}
             </Button>
+            <PublishNowButton
+              onConfirm={() => submit("now")}
+              disabled={isPending || mediaAssetIds.length === 0}
+              platforms={{ instagram: igChecked, tiktok: tiktokChecked, youtube: youtubeChecked }}
+              className="w-full sm:w-auto"
+            />
             <Button
               variant="outline"
               onClick={() => submit("draft")}

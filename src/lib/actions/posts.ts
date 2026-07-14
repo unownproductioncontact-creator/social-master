@@ -249,6 +249,39 @@ export async function scheduleExistingPost(input: z.infer<typeof ScheduleSchema>
   return {};
 }
 
+const PublishNowSchema = z.object({
+  postId: z.string().min(1),
+  timezone: z.string().default("Europe/Paris"),
+});
+
+/**
+ * « Publier maintenant » (P — demande du user) : programme le post pour MAINTENANT, toutes cibles à
+ * `now` (sans offset TikTok/IG/YT), via `schedulePost(..., { immediate: true })` qui saute la
+ * contrainte « ≥ 60 s dans le futur ». Le worker pg-boss prend les jobs dans la foulée. Réservé aux
+ * brouillons (un post déjà programmé/publié ne se re-publie pas ainsi — même garde que la
+ * programmation). Les validations média/plateforme/quota TikTok de `schedulePost` s'appliquent.
+ */
+export async function publishPostNowAction(input: z.infer<typeof PublishNowSchema>): Promise<ScheduleResult> {
+  const session = await verifySession();
+  const parsed = PublishNowSchema.safeParse(input);
+  if (!parsed.success) return { error: "Requête invalide." };
+  const { postId, timezone } = parsed.data;
+
+  const post = await db.post.findUnique({ where: { id: postId } });
+  if (!post || post.userId !== session.userId) return { error: "Post introuvable." };
+  if (post.status !== "DRAFT") {
+    return { error: "Seul un brouillon peut être publié immédiatement." };
+  }
+
+  const result = await schedulePost(postId, new Date(), timezone, undefined, { immediate: true });
+  if (result.error) return result;
+
+  revalidatePath(`/composer/${postId}`);
+  revalidatePath("/calendar");
+  revalidatePath("/dashboard");
+  return {};
+}
+
 export async function unschedulePostAction(postId: string): Promise<void> {
   const session = await verifySession();
   const post = await db.post.findUnique({ where: { id: postId } });

@@ -187,6 +187,28 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     await db.post.delete({ where: { id: created.postId } });
   });
 
+  it("« Publier maintenant » (immediate) : accepte l'horaire `now` sans le refus « < 1 min », job runAt ≈ maintenant", async () => {
+    const created = await createDraftPost();
+    const now = new Date();
+    const result = await scheduleWithRetry(created.postId, now, "Europe/Paris", undefined, { immediate: true });
+
+    if (result.error && KNOWN_LOCAL_ENGINE_QUIRK.test(result.error)) {
+      await db.post.delete({ where: { id: created.postId } });
+      return; // artefact moteur prisma dev, non concluant (cf. scheduleWithRetry)
+    }
+
+    expect(result.error).toBeUndefined();
+    const post = await db.post.findUniqueOrThrow({ where: { id: created.postId } });
+    expect(post.status).toBe("SCHEDULED");
+    const job = await db.publishJob.findFirstOrThrow({ where: { postTargetId: created.postTargetId } });
+    expect(job.state).toBe("WAITING");
+    // L'horaire visé est « maintenant » : le runAt ne doit PAS avoir été repoussé (≤ l'instant présent).
+    expect(job.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    await unschedulePost(created.postId);
+    await db.post.delete({ where: { id: created.postId } });
+  });
+
   it("refuse de programmer un post sans média", async () => {
     const post = await db.post.create({ data: { userId, caption: "Sans média", status: "DRAFT" } });
     await db.postTarget.create({

@@ -31,7 +31,8 @@ export async function schedulePost(
   postId: string,
   scheduledAt: Date,
   scheduledTz: string,
-  targetTimes?: TargetTimes
+  targetTimes?: TargetTimes,
+  options?: { immediate?: boolean }
 ): Promise<SchedulePostResult> {
   // La queue est créée une fois pour toutes au démarrage du worker (voir worker/index.ts).
   const boss = getBoss();
@@ -67,7 +68,11 @@ export async function schedulePost(
     },
     Number.POSITIVE_INFINITY
   );
-  if (earliestTime < Date.now() + 60_000) {
+  // « Publier maintenant » (options.immediate) court-circuite la contrainte « ≥ 60 s dans le futur » :
+  // l'horaire visé est `now`, les jobs pg-boss partent avec `startAfter = now` → le worker les prend
+  // dans la foulée. Le service est forcément éveillé (l'utilisateur vient de cliquer), donc pas de
+  // souci de veille nocturne. Le garde-fou quota TikTok ci-dessous s'applique quand même.
+  if (!options?.immediate && earliestTime < Date.now() + 60_000) {
     return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
   }
 

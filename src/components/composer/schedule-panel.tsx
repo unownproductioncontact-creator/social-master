@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
 import { PlatformChip } from "@/components/ui/platform-chip";
-import { scheduleExistingPost, unschedulePostAction, reschedulePostAction } from "@/lib/actions/posts";
+import { scheduleExistingPost, unschedulePostAction, reschedulePostAction, publishPostNowAction } from "@/lib/actions/posts";
+import { PublishNowButton } from "@/components/composer/publish-now-button";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 
 type TargetStatus = {
@@ -160,6 +161,18 @@ export function SchedulePanel({
     });
   }
 
+  function handlePublishNow() {
+    startTransition(async () => {
+      const result = await publishPostNowAction({ postId, timezone });
+      if (result.error) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Publication lancée — elle part maintenant.");
+      router.refresh();
+    });
+  }
+
   function handleOpenReschedule() {
     setRescheduleValue(defaultValue);
     setIsEditingSchedule(true);
@@ -201,9 +214,21 @@ export function SchedulePanel({
               />
             </div>
             <QuietWindowNotice value={dateTime} timezone={timezone} onShiftToWakeTime={setDateTime} />
-            <Button onClick={handleSchedule} disabled={isPending || !dateTime || !canSchedule} className="w-full sm:w-auto">
-              {isPending ? "Programmation…" : "Programmer"}
-            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <Button onClick={handleSchedule} disabled={isPending || !dateTime || !canSchedule} className="w-full sm:w-auto">
+                {isPending ? "Programmation…" : "Programmer"}
+              </Button>
+              <PublishNowButton
+                onConfirm={handlePublishNow}
+                disabled={isPending || !canSchedule}
+                platforms={{
+                  instagram: targets.some((t) => t.platform === "INSTAGRAM"),
+                  tiktok: targets.some((t) => t.platform === "TIKTOK"),
+                  youtube: targets.some((t) => t.platform === "YOUTUBE"),
+                }}
+                className="w-full sm:w-auto"
+              />
+            </div>
             {!canSchedule && (
               <p className="text-xs text-muted-foreground">
                 Enregistrez d’abord le brouillon avec un média et au moins une plateforme.
