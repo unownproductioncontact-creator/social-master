@@ -45,9 +45,6 @@ export async function schedulePost(
   if (post.postTargets.length === 0) return { error: "Choisissez au moins une plateforme avant de programmer." };
   if (post.postMedia.length === 0) return { error: "Ajoutez un média avant de programmer." };
 
-  // Horaire effectif de chaque cible : override par plateforme si fourni, sinon l'horaire de base.
-  const effectiveTimeFor = (platform: Platform): Date => targetTimes?.[platform] ?? scheduledAt;
-
   // DÉFENSE EN PROFONDEUR (P1-2 / 1d) : on ne (re)programme QUE les cibles pas-encore-résolues. Une
   // cible déjà PUBLISHED ou SENT_TO_INBOX ne doit JAMAIS recevoir un nouveau PublishJob ni repasser en
   // PENDING (sinon double publication) — cas atteignable en reprogrammant un post partiellement publié.
@@ -59,21 +56,34 @@ export async function schedulePost(
     return { error: "Toutes les cibles de ce post sont déjà publiées — rien à programmer." };
   }
 
-  // La validation « ≥ 60s dans le futur » s'applique à la cible schedulable LA PLUS TÔT : si la
-  // première publication (TikTok à H, par ex.) est trop proche, on refuse tout le lot.
-  const earliestTime = schedulableTargets.reduce(
-    (min, target) => {
-      const t = effectiveTimeFor(target.platform).getTime();
-      return t < min ? t : min;
-    },
-    Number.POSITIVE_INFINITY
-  );
-  // « Publier maintenant » (options.immediate) court-circuite la contrainte « ≥ 60 s dans le futur » :
-  // l'horaire visé est `now`, les jobs pg-boss partent avec `startAfter = now` → le worker les prend
-  // dans la foulée. Le service est forcément éveillé (l'utilisateur vient de cliquer), donc pas de
-  // souci de veille nocturne. Le garde-fou quota TikTok ci-dessous s'applique quand même.
-  if (!options?.immediate && earliestTime < Date.now() + 60_000) {
-    return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
+  type SchedulableTarget = (typeof schedulableTargets)[number];
+
+  // Horaire effectif de chaque cible.
+  // ⚡ BROUILLON TIKTOK = DÉPÔT IMMÉDIAT : tant que l'app TikTok n'est pas approuvée en Direct Post, une
+  // cible TikTok en mode brouillon (publishMode `TIKTOK_DRAFT`) est déposée dans la boîte de réception
+  // TikTok TOUT DE SUITE, même si le post est programmé pour plus tard. En mode brouillon, c'est
+  // l'utilisateur qui publie lui-même depuis l'app TikTok au moment voulu → retarder le DÉPÔT du
+  // brouillon n'a aucun intérêt (demande du user). Instagram/YouTube gardent leur horaire programmé.
+  // Se neutralise seul dès le passage en Direct Post (le publishMode ne sera plus `TIKTOK_DRAFT`).
+  // `options.immediate` (« Publier maintenant ») force EN PLUS toutes les cibles à maintenant.
+  const now = new Date();
+  const isImmediateTarget = (t: SchedulableTarget): boolean =>
+    options?.immediate === true || (t.platform === "TIKTOK" && t.publishMode === "TIKTOK_DRAFT");
+  const effectiveTimeFor = (t: SchedulableTarget): Date =>
+    isImmediateTarget(t) ? now : targetTimes?.[t.platform] ?? scheduledAt;
+
+  // La validation « ≥ 60s dans le futur » ne concerne QUE les cibles réellement PROGRAMMÉES (pas les
+  // dépôts immédiats) : mesurée sur la cible programmée la plus tôt. Si toutes les cibles sont
+  // immédiates (brouillon TikTok seul, ou « Publier maintenant »), aucune contrainte de futur.
+  const scheduledTargets = schedulableTargets.filter((t) => !isImmediateTarget(t));
+  if (scheduledTargets.length > 0) {
+    const earliestScheduled = scheduledTargets.reduce(
+      (min, t) => Math.min(min, effectiveTimeFor(t).getTime()),
+      Number.POSITIVE_INFINITY
+    );
+    if (earliestScheduled < Date.now() + 60_000) {
+      return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
+    }
   }
 
   // Garde-fou quota TikTok MESURÉ AUTOUR de l'horaire visé (P1-4) : un brouillon TikTok programmé à T
@@ -87,7 +97,7 @@ export async function schedulePost(
   if (tiktokTarget) {
     const capacity = await checkTikTokDraftCapacityAt(
       { socialAccountId: tiktokTarget.socialAccountId },
-      effectiveTimeFor("TIKTOK")
+      effectiveTimeFor(tiktokTarget) // = maintenant (dépôt immédiat) tant qu'on est en mode brouillon
     );
     if (!capacity.allowed) {
       return { error: capacity.message ?? "Plafond de brouillons TikTok atteint pour cet horaire." };
@@ -103,7 +113,7 @@ export async function schedulePost(
 
       for (const target of schedulableTargets) {
         const idempotencyKey = randomUUID();
-        const targetTime = effectiveTimeFor(target.platform);
+        const targetTime = effectiveTimeFor(target);
 
         await tx.publishJob.create({
           data: {

@@ -240,13 +240,14 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     await db.post.delete({ where: { id: postId } });
   });
 
-  it("horaires décalés par cible : TikTok à H, Instagram à H+300s → runAt ET PostTarget.scheduledAt distincts", async () => {
+  it("brouillon TikTok déposé IMMÉDIATEMENT même quand le post est programmé ; Instagram garde son horaire", async () => {
     const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
 
-    // Base à H+10min ; on décale explicitement Instagram de +300s (H+5min après le TikTok).
+    // Base à H+10min ; Instagram décalé à H+15min. Le brouillon TikTok (TIKTOK_DRAFT), lui, part MAINTENANT.
     const baseTime = new Date(Date.now() + 10 * 60 * 1000);
-    const tiktokTime = baseTime;
+    const tiktokTime = baseTime; // volontairement ignoré : un brouillon TikTok est déposé tout de suite
     const instagramTime = new Date(baseTime.getTime() + 300 * 1000);
+    const callMs = Date.now();
 
     const result = await scheduleWithRetry(dualPostId, baseTime, "Europe/Paris", {
       TIKTOK: tiktokTime,
@@ -256,7 +257,7 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     if (result.error && KNOWN_LOCAL_ENGINE_QUIRK.test(result.error)) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[scheduler.test.ts] Limitation connue du moteur prisma dev local rencontrée (offsets par cible) — non concluant ici."
+        "[scheduler.test.ts] Limitation connue du moteur prisma dev local rencontrée (dépôt TikTok immédiat) — non concluant ici."
       );
       await db.post.delete({ where: { id: dualPostId } }).catch(() => {});
       return;
@@ -264,21 +265,23 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
 
     expect(result.error).toBeUndefined();
 
-    // PostTarget.scheduledAt : chaque cible porte SON horaire effectif, distinct de l'autre.
     const tiktokTarget = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
     const igTarget = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
-    expect(tiktokTarget.scheduledAt?.getTime()).toBe(tiktokTime.getTime());
+    // TikTok (brouillon) : horaire effectif = MAINTENANT (≈ instant de l'appel), PAS l'horaire programmé.
+    expect(tiktokTarget.scheduledAt!.getTime()).toBeGreaterThanOrEqual(callMs - 5000);
+    expect(tiktokTarget.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tiktokTarget.scheduledAt!.getTime()).not.toBe(tiktokTime.getTime());
+    // Instagram : conserve son horaire programmé.
     expect(igTarget.scheduledAt?.getTime()).toBe(instagramTime.getTime());
-    expect(igTarget.scheduledAt!.getTime() - tiktokTarget.scheduledAt!.getTime()).toBe(300 * 1000);
 
-    // PublishJob.runAt : idem, le runAt de chaque job suit l'horaire de sa cible (utilisé aussi pour startAfter).
+    // PublishJob.runAt : TikTok part tout de suite (≤ maintenant), Instagram à son horaire.
     const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
     const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
-    expect(tiktokJob.runAt.getTime()).toBe(tiktokTime.getTime());
+    expect(tiktokJob.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     expect(igJob.runAt.getTime()).toBe(instagramTime.getTime());
     expect(igJob.runAt.getTime()).not.toBe(tiktokJob.runAt.getTime());
 
-    // Post.scheduledAt reste l'horaire de base (inchangé par les offsets).
+    // Post.scheduledAt reste l'horaire de base (référence d'affichage Instagram/YouTube).
     const post = await db.post.findUniqueOrThrow({ where: { id: dualPostId } });
     expect(post.scheduledAt?.getTime()).toBe(baseTime.getTime());
 
@@ -373,7 +376,7 @@ describe("unschedulePost / reschedulePost — anti-double-publication & modif ho
     await db.post.delete({ where: { id: post.id } });
   });
 
-  it("reschedulePost décale le post en PRÉSERVANT l'écart de 5 min entre TikTok (H) et Instagram (H+5min)", async () => {
+  it("reschedulePost décale l'horaire programmé d'Instagram ; le brouillon TikTok reste un dépôt immédiat", async () => {
     const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
 
     const base = new Date(Date.now() + 20 * 60 * 1000);
@@ -400,19 +403,20 @@ describe("unschedulePost / reschedulePost — anti-double-publication & modif ho
 
     const tiktokAfter = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
     const igAfter = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
-    expect(tiktokAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
+    // Instagram : décalé au nouvel horaire (base+2h) en conservant son offset de +5 min.
     expect(igAfter.scheduledAt?.getTime()).toBe(newBase.getTime() + 300 * 1000);
-    // L'écart de 5 min est bien préservé après reprogrammation.
-    expect(igAfter.scheduledAt!.getTime() - tiktokAfter.scheduledAt!.getTime()).toBe(300 * 1000);
+    // TikTok (brouillon) : reste un dépôt IMMÉDIAT (≤ maintenant), pas repoussé au nouvel horaire.
+    expect(tiktokAfter.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tiktokAfter.scheduledAt!.getTime()).not.toBe(newBase.getTime());
 
     const postAfter = await db.post.findUniqueOrThrow({ where: { id: dualPostId } });
     expect(postAfter.status).toBe("SCHEDULED");
     expect(postAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
 
-    // Les runAt des jobs suivent aussi les nouveaux horaires.
+    // Les runAt des jobs : Instagram au nouvel horaire, TikTok tout de suite.
     const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
     const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
-    expect(tiktokJob.runAt.getTime()).toBe(newBase.getTime());
+    expect(tiktokJob.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     expect(igJob.runAt.getTime()).toBe(newBase.getTime() + 300 * 1000);
 
     await unschedulePost(dualPostId);

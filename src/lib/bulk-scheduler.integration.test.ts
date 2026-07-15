@@ -332,14 +332,16 @@ describe("scheduleManyPosts (intégration DB + pg-boss)", () => {
     expect(result.failed).toBe(0);
     expect(result.results.every((r) => r.ok && r.postId)).toBe(true);
 
-    // Vérifie sur le premier post que TikTok et Instagram sont bien décalés de 300s.
+    // Le brouillon TikTok est déposé IMMÉDIATEMENT (≤ maintenant) ; Instagram garde son horaire décalé
+    // (base + 300s de l'offset) — cf. schedulePost, dépôt TikTok immédiat en mode brouillon.
     const firstPostId = result.results[0].postId!;
     const targets = await db.postTarget.findMany({ where: { postId: firstPostId } });
     const tiktokTarget = targets.find((t) => t.platform === "TIKTOK");
     const igTarget = targets.find((t) => t.platform === "INSTAGRAM");
     expect(tiktokTarget?.scheduledAt).toBeTruthy();
     expect(igTarget?.scheduledAt).toBeTruthy();
-    expect(igTarget!.scheduledAt!.getTime() - tiktokTarget!.scheduledAt!.getTime()).toBe(300 * 1000);
+    expect(tiktokTarget!.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(igTarget!.scheduledAt!.getTime()).toBe(base.getTime() + 300 * 1000);
 
     // Post.scheduledAt = horaire de base (inchangé par l'offset).
     const post = await db.post.findUniqueOrThrow({ where: { id: firstPostId } });
@@ -473,7 +475,10 @@ describe("scheduleManyPosts (intégration DB + pg-boss)", () => {
     const ttTarget = await db.postTarget.findFirstOrThrow({
       where: { postId: ttPostId, platform: "TIKTOK" },
     });
-    expect(ttTarget.scheduledAt?.getTime()).toBe(tiktokTime.getTime());
+    // ⚡ Brouillon TikTok = dépôt IMMÉDIAT : l'horaire custom fourni est volontairement ignoré (déposé
+    // maintenant, l'utilisateur publie depuis TikTok quand il veut). Instagram, lui, garde son horaire.
+    expect(ttTarget.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(ttTarget.scheduledAt!.getTime()).not.toBe(tiktokTime.getTime());
 
     const igTarget = await db.postTarget.findFirstOrThrow({
       where: { postId: igPostId, platform: "INSTAGRAM" },

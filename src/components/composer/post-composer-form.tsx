@@ -575,6 +575,13 @@ export function PostComposerForm({
             <p className="text-[11.5px] text-muted-foreground">
               Laissez vide pour enregistrer un simple brouillon (vous le programmerez plus tard).
             </p>
+            {tiktokChecked && (
+              <p className="text-[11.5px] text-muted-foreground">
+                Le brouillon TikTok est déposé <span className="font-medium text-foreground">immédiatement</span> dans vos
+                notifications TikTok (vous le publiez depuis l’app quand vous voulez). L’horaire ci-dessus s’applique à
+                Instagram et YouTube.
+              </p>
+            )}
             {quietWarning && (
               <div className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[12.5px] text-amber-700 dark:text-amber-400 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-2">
