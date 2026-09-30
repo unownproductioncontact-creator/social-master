@@ -10,6 +10,7 @@ import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from "@/lib/providers/tiktok";
 import { deliverTikTokDraft } from "@/lib/tiktok-draft";
+import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
 import { notifyTelegram } from "@/lib/telegram";
@@ -96,6 +97,8 @@ async function processTarget(postTargetId: string): Promise<void> {
     if (quota.quotaUsage >= quota.quotaTotal) {
       throw new Error("Quota de publication Instagram atteint (2207042 / erreur 9)");
     }
+    // Collaborateurs invités (CLAUDE.md §28) : jamais sur une Story (non supporté par l'API).
+    const collaborators = target.contentType === "STORY" ? [] : collaboratorsFromOptions(target.platformOptions);
 
     const result =
       target.contentType === "CAROUSEL"
@@ -109,7 +112,10 @@ async function processTarget(postTargetId: string): Promise<void> {
                 const key = isVideo ? media.storageKey : await ensureJpegVersion(media.storageKey, media.mimeType);
                 return { mediaUrl: getPublicMediaUrl(key), isVideo };
               })
-            )
+            ),
+            undefined, // intervalle de poll par défaut
+            undefined, // délai max par défaut
+            collaborators
           )
         : await (async () => {
             const media = orderedMedia[0];
@@ -128,6 +134,7 @@ async function processTarget(postTargetId: string): Promise<void> {
               mediaUrl: getPublicMediaUrl(key),
               isVideo: media.mimeType.startsWith("video/"),
               thumbOffsetMs: coverTimeMs ?? undefined,
+              collaborators,
             });
           })();
 

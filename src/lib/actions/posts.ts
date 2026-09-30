@@ -9,6 +9,7 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { schedulePost, unschedulePost, reschedulePost } from "@/lib/scheduler";
 import { checkInstagramCarouselCompatibility, checkTikTokPhotoCompatibility } from "@/lib/media-validation";
+import { normalizeInstagramCollaborators, validateInstagramCollaborators } from "@/lib/instagram-collaborators";
 import {
   computeInstagramContentType,
   computeTikTokContentType,
@@ -33,6 +34,8 @@ const SavePostSchema = z.object({
     .nullish(),
   // Reel Instagram : frame de couverture en ms (thumb_offset). Ignoré hors REEL.
   instagramCoverTimeMs: z.number().int().min(0).nullish(),
+  // Pseudos Instagram invités en collaboration (≤ 3, validés plus bas). Ignoré pour une Story (§28).
+  instagramCollaborators: z.array(z.string().max(64)).max(10).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -109,6 +112,14 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
     return { error: "Connectez d'abord votre compte YouTube." };
   }
 
+  // Collaborateurs Instagram (§28) : uniquement Post/Reel/Carrousel — une Story n'en accepte pas.
+  const igCollaborators =
+    igContentType && igContentType !== "STORY"
+      ? normalizeInstagramCollaborators(data.instagramCollaborators ?? [])
+      : [];
+  const collaboratorsError = validateInstagramCollaborators(igCollaborators, instagramAccount?.username);
+  if (collaboratorsError) return { error: collaboratorsError };
+
   // ANTI-DOUBLE-PUBLICATION (P1-2) : une plateforme qui possède DÉJÀ une cible publiée/inbox sur ce
   // post est « déjà servie ». On ne doit ni supprimer cette cible (perte d'historique) ni en créer une
   // nouvelle (republication) — même si la case est encore cochée. Cas atteignable : un post
@@ -157,11 +168,13 @@ export async function savePostDraft(input: SavePostInput): Promise<SavePostResul
           contentType: igContentType,
           publishMode: "AUTO",
           status: "PENDING",
-          // Frame de couverture uniquement pertinente pour un Reel vidéo.
-          platformOptions:
-            igContentType === "REEL" && data.instagramCoverTimeMs != null
+          // Frame de couverture uniquement pertinente pour un Reel vidéo ; collaborateurs hors Story.
+          platformOptions: {
+            ...(igContentType === "REEL" && data.instagramCoverTimeMs != null
               ? { coverTimeMs: Math.round(data.instagramCoverTimeMs) }
-              : {},
+              : {}),
+            ...(igCollaborators.length > 0 ? { collaborators: igCollaborators } : {}),
+          },
         },
       });
     }

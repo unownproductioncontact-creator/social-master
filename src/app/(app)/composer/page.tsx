@@ -8,6 +8,7 @@ import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
+import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -98,6 +99,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         youtubeTitle: (ytTarget?.platformOptions as { title?: string } | null)?.title ?? undefined,
         instagramCoverTimeMs:
           (igTarget?.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs ?? null,
+        instagramCollaborators: collaboratorsFromOptions(igTarget?.platformOptions),
       };
     }
   } else if (mediaParam && readyIds.has(mediaParam)) {

@@ -166,7 +166,13 @@ type CreateContainerParams = {
   mediaUrl: string; // video_url pour REELS/STORIES vidéo, image_url pour IMAGE/STORIES image
   isVideo?: boolean; // requis pour distinguer une Story image d'une Story vidéo
   thumbOffsetMs?: number; // Reel : frame de couverture (thumb_offset, en ms depuis le début de la vidéo)
+  collaborators?: string[]; // Post/Reel : pseudos invités en collaboration (≤ 3) — ignoré pour une Story
 };
+
+/** Paramètre `collaborators` (tableau JSON de pseudos, CLAUDE.md §28) — absent si la liste est vide. */
+function collaboratorsParam(collaborators?: string[]): Record<string, string> {
+  return collaborators && collaborators.length > 0 ? { collaborators: JSON.stringify(collaborators) } : {};
+}
 
 async function graphFetch(
   path: string,
@@ -197,7 +203,12 @@ async function graphFetch(
 export async function createMediaContainer(params: CreateContainerParams): Promise<string> {
   let body: Record<string, string>;
   if (params.mediaType === "REELS") {
-    body = { media_type: "REELS", video_url: params.mediaUrl, caption: params.caption };
+    body = {
+      media_type: "REELS",
+      video_url: params.mediaUrl,
+      caption: params.caption,
+      ...collaboratorsParam(params.collaborators),
+    };
     // Couverture du Reel : frame à `thumbOffsetMs` ms (choisie dans le composer pour matcher TikTok).
     if (params.thumbOffsetMs != null && params.thumbOffsetMs >= 0) {
       body.thumb_offset = String(Math.round(params.thumbOffsetMs));
@@ -210,7 +221,7 @@ export async function createMediaContainer(params: CreateContainerParams): Promi
       ...(params.isVideo ? { video_url: params.mediaUrl } : { image_url: params.mediaUrl }),
     };
   } else {
-    body = { image_url: params.mediaUrl, caption: params.caption };
+    body = { image_url: params.mediaUrl, caption: params.caption, ...collaboratorsParam(params.collaborators) };
   }
 
   const json = await graphFetch(`/${params.igUserId}/media`, params.accessToken, body, "POST");
@@ -237,12 +248,14 @@ export async function createCarouselParentContainer(
   igUserId: string,
   accessToken: string,
   childContainerIds: string[],
-  caption: string
+  caption: string,
+  collaborators?: string[]
 ): Promise<string> {
+  // Les collaborateurs se déclarent sur le container PARENT (jamais sur les enfants).
   const json = await graphFetch(
     `/${igUserId}/media`,
     accessToken,
-    { media_type: "CAROUSEL", children: childContainerIds.join(","), caption },
+    { media_type: "CAROUSEL", children: childContainerIds.join(","), caption, ...collaboratorsParam(collaborators) },
     "POST"
   );
   return json.id as string;
@@ -349,7 +362,8 @@ export async function publishInstagramCarousel(
   caption: string,
   items: Array<{ mediaUrl: string; isVideo: boolean }>,
   pollIntervalMs = 30000,
-  maxWaitMs = 5 * 60 * 1000
+  maxWaitMs = 5 * 60 * 1000,
+  collaborators: string[] = []
 ): Promise<{ platformPostId: string; platformPostUrl: string | null }> {
   if (items.length < 2 || items.length > 10) {
     throw new Error("Un carrousel Instagram doit contenir entre 2 et 10 médias (36000-series)");
@@ -364,7 +378,7 @@ export async function publishInstagramCarousel(
     childIds.push(childId);
   }
 
-  const parentId = await createCarouselParentContainer(igUserId, accessToken, childIds, caption);
+  const parentId = await createCarouselParentContainer(igUserId, accessToken, childIds, caption, collaborators);
   await waitForContainerReady(parentId, accessToken, pollIntervalMs, maxWaitMs);
 
   const mediaId = await publishContainer(igUserId, parentId, accessToken);

@@ -137,6 +137,24 @@ describe("Publication média unique", () => {
     ).rejects.toThrow(/ig_container_error/);
   });
 
+  it("collaborateurs : tableau JSON de pseudos sur un Reel et une image, jamais sur une Story", async () => {
+    mockFetch(() => res({ id: "cont1" }));
+    const base = { igUserId: "ig", accessToken: "t", caption: "c", collaborators: ["a.b", "c_d"] };
+    await createMediaContainer({ ...base, mediaType: "REELS", mediaUrl: "https://m/v.mp4" });
+    await createMediaContainer({ ...base, mediaType: "IMAGE", mediaUrl: "https://m/i.jpg" });
+    await createMediaContainer({ ...base, mediaType: "STORIES", mediaUrl: "https://m/s.mp4", isVideo: true });
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(JSON.parse(posts[0].body!.get("collaborators")!)).toEqual(["a.b", "c_d"]);
+    expect(JSON.parse(posts[1].body!.get("collaborators")!)).toEqual(["a.b", "c_d"]);
+    expect(posts[2].body?.get("collaborators")).toBeNull();
+  });
+
+  it("sans collaborateurs : aucun paramètre collaborators envoyé", async () => {
+    mockFetch(() => res({ id: "cont1" }));
+    await createMediaContainer({ igUserId: "ig", accessToken: "t", caption: "c", mediaType: "IMAGE", mediaUrl: "u", collaborators: [] });
+    expect(calls.find((c) => c.method === "POST")?.body?.get("collaborators")).toBeNull();
+  });
+
   it("FIX : une Story n'envoie PAS de caption dans son conteneur", async () => {
     mockFetch(() => res({ id: "cont1" }));
     await createMediaContainer({
@@ -178,16 +196,19 @@ describe("Carrousel", () => {
         { mediaUrl: "https://m/2.mp4", isVideo: true },
       ],
       1,
-      5000
+      5000,
+      ["collab.un"]
     );
     expect(r.platformPostId).toBe("carousel_final");
-    // Les 2 enfants portent is_carousel_item=true.
+    // Les 2 enfants portent is_carousel_item=true, sans collaborateurs.
     const children = posts.filter((p) => p.get("is_carousel_item") === "true");
     expect(children).toHaveLength(2);
-    // Le parent est un CAROUSEL avec une liste children (CSV de 2 IDs).
+    expect(children.every((c) => c.get("collaborators") === null)).toBe(true);
+    // Le parent est un CAROUSEL avec une liste children (CSV de 2 IDs) et porte les collaborateurs.
     const parent = posts.find((p) => p.get("media_type") === "CAROUSEL");
     expect(parent).toBeTruthy();
     expect(parent!.get("children")).toContain(",");
+    expect(JSON.parse(parent!.get("collaborators")!)).toEqual(["collab.un"]);
   });
 
   it("refuse un carrousel hors bornes 2–10", async () => {

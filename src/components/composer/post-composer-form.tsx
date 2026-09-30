@@ -26,6 +26,11 @@ import {
   YOUTUBE_TITLE_MAX_LENGTH,
 } from "@/lib/content-type";
 import { checkYouTubeShortCompatibility } from "@/lib/media-validation";
+import {
+  IG_COLLABORATORS_MAX,
+  parseInstagramCollaborators,
+  validateInstagramCollaborators,
+} from "@/lib/instagram-collaborators";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
@@ -104,6 +109,8 @@ export function PostComposerForm({
     /** Titre YouTube explicite déjà saisi (PostTarget.platformOptions.title) — vide sinon. */
     youtubeTitle?: string;
     instagramCoverTimeMs?: number | null;
+    /** Pseudos Instagram invités en collaboration (PostTarget.platformOptions.collaborators). */
+    instagramCollaborators?: string[];
   };
   /** Valeur par défaut du champ de programmation (datetime-local, heure locale). Nouveau post seulement. */
   initialScheduleLocal?: string;
@@ -130,6 +137,9 @@ export function PostComposerForm({
   const [targetYoutube, setTargetYoutube] = useState(initialPost?.targetYoutube ?? youtubeConnected);
   const [youtubeTitle, setYoutubeTitle] = useState(initialPost?.youtubeTitle ?? "");
   const [coverTimeMs, setCoverTimeMs] = useState<number | null>(initialPost?.instagramCoverTimeMs ?? null);
+  const [collaboratorsText, setCollaboratorsText] = useState(
+    (initialPost?.instagramCollaborators ?? []).map((u) => `@${u}`).join(", ")
+  );
   const [dateTime, setDateTime] = useState(initialScheduleLocal ?? "");
   // Vrai dès que l'utilisateur modifie lui-même le champ de programmation (saisie ou raccourci) — sert
   // à protéger sa saisie contre le pré-remplissage mémoire ci-dessous (voir l'effet de montage).
@@ -165,6 +175,11 @@ export function PostComposerForm({
   const youtubeChecked = servedYoutube || (targetYoutube && youtubeEligible);
   const youtubeDisabled = !youtubeConnected || servedYoutube || youtubeContentType === null;
   const youtubeTitleVisible = youtubeChecked && !youtubeDisabled;
+  // Collaborateurs Instagram (§28) : Post/Reel/Carrousel seulement (pas de Story), tant que pas publié.
+  const igCollaboratorsVisible =
+    targetInstagram && instagramConnected && !servedInstagram && igContentType !== null && igContentType !== "STORY";
+  const parsedCollaborators = useMemo(() => parseInstagramCollaborators(collaboratorsText), [collaboratorsText]);
+  const collaboratorsError = igCollaboratorsVisible ? validateInstagramCollaborators(parsedCollaborators) : null;
 
   // Avertissements média YouTube (non bloquants) : > 3 min ou horizontal → « pas classé Short ». Calculés
   // seulement quand la case est cochée et qu'un unique média vidéo est sélectionné (sinon rien à dire).
@@ -228,6 +243,10 @@ export function PostComposerForm({
    * existe déjà : on redirige vers sa page d'édition (le SchedulePanel y permet de reprendre).
    */
   function submit(mode: "schedule" | "draft" | "now") {
+    if (collaboratorsError) {
+      toast.error(collaboratorsError);
+      return;
+    }
     const hashtags = hashtagsText
       .split(/[\s,]+/)
       .map((h) => h.trim().replace(/^#/, ""))
@@ -247,6 +266,7 @@ export function PostComposerForm({
         // worker reconstruit le repli (1re ligne de légende via youtubeTitleFallback), jamais stocké vide.
         youtubeTitle: youtubeTitleVisible && youtubeTitle.trim() ? youtubeTitle.trim() : undefined,
         instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
+        instagramCollaborators: igCollaboratorsVisible ? parsedCollaborators : undefined,
       });
       if (result.error) {
         toast.error(result.error);
@@ -521,6 +541,34 @@ export function PostComposerForm({
             valueMs={coverTimeMs}
             onChange={setCoverTimeMs}
           />
+        )}
+
+        {igCollaboratorsVisible && (
+          <div className="space-y-1.5 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="ig-collaborators" className="text-xs font-semibold">
+                Collaborateurs Instagram
+              </Label>
+              <span className="text-[11.5px] text-muted-foreground">
+                {parsedCollaborators.length}/{IG_COLLABORATORS_MAX}
+              </span>
+            </div>
+            <Input
+              id="ig-collaborators"
+              value={collaboratorsText}
+              onChange={(e) => setCollaboratorsText(e.target.value)}
+              placeholder="@pseudo1, @pseudo2"
+              aria-invalid={collaboratorsError ? true : undefined}
+            />
+            {collaboratorsError ? (
+              <p className="text-[11.5px] text-destructive">{collaboratorsError}</p>
+            ) : (
+              <p className="text-[11.5px] text-muted-foreground">
+                Facultatif. Chaque compte reçoit une invitation dans Instagram ; une fois acceptée, le post
+                apparaît aussi sur son profil.
+              </p>
+            )}
+          </div>
         )}
 
         {youtubeTitleVisible && (

@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { buttonVariants } from "@/components/ui/button";
 import { CopyCaptionButton } from "@/components/history/copy-caption-button";
 import { AutoRefresh } from "@/components/util/auto-refresh";
+import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -145,6 +146,9 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             instagramCoverTimeMs:
               (post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions as { coverTimeMs?: number } | null)
                 ?.coverTimeMs ?? null,
+            instagramCollaborators: collaboratorsFromOptions(
+              post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions
+            ),
           }}
         />
       ) : (
