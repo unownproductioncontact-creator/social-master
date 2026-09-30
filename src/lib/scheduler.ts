@@ -126,7 +126,9 @@ export async function schedulePost(
 
         await tx.postTarget.update({
           where: { id: target.id },
-          data: { status: "PENDING", scheduledAt: targetTime },
+          // Nouvel envoi = nouveau publish_id TikTok : on oublie celui d'une tentative précédente
+          // (sinon le worker reprendrait l'attente d'un envoi mort au lieu de renvoyer, §27).
+          data: { status: "PENDING", scheduledAt: targetTime, tiktokPublishId: null, tiktokUploadedAt: null },
         });
 
         await boss.send(
@@ -182,7 +184,14 @@ export async function unschedulePost(postId: string): Promise<void> {
     // programmé (symétrique de l'écriture dans schedulePost). Les cibles publiées gardent tout.
     await tx.postTarget.updateMany({
       where: { postId, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
-      data: { status: "PENDING", scheduledAt: null, errorCode: null, errorMessage: null },
+      data: {
+        status: "PENDING",
+        scheduledAt: null,
+        errorCode: null,
+        errorMessage: null,
+        tiktokPublishId: null,
+        tiktokUploadedAt: null,
+      },
     });
     await tx.post.update({ where: { id: postId }, data: { status: "DRAFT", scheduledAt: null } });
   });

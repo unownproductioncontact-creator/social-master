@@ -105,17 +105,62 @@ export function classifyInstagramError(err: unknown): ClassifiedError {
   return { errorClass: "transient", code: "ig_unknown", message: "Erreur Instagram inattendue, nouvelle tentative en cours." };
 }
 
+/**
+ * Le média est chez TikTok (publish_id connu) mais son traitement n'est pas terminé dans le délai
+ * d'attente. Ce n'est PAS un échec : TikTok peut encore livrer le brouillon — on ne renvoie donc jamais
+ * le fichier, on reprend seulement la vérification du même publish_id.
+ */
+export class TikTokStillProcessingError extends Error {
+  readonly publishId: string;
+  constructor(publishId: string) {
+    super(`Délai de traitement TikTok dépassé (publish_id ${publishId}).`);
+    this.name = "TikTokStillProcessingError";
+    this.publishId = publishId;
+  }
+}
+
+/** TikTok a explicitement abandonné l'envoi (statut FAILED) : aucun brouillon ne sera livré. */
+export class TikTokPublishFailedError extends Error {
+  readonly failReason: string;
+  constructor(failReason: string) {
+    super(`Publication TikTok en échec : ${failReason}`);
+    this.name = "TikTokPublishFailedError";
+    this.failReason = failReason;
+  }
+}
+
 export function classifyTikTokError(err: unknown): ClassifiedError {
   const message = err instanceof Error ? err.message : String(err);
 
+  if (err instanceof TikTokStillProcessingError) {
+    return {
+      errorClass: "transient",
+      code: "tt_processing",
+      message: "TikTok traite encore la vidéo — nouvelle vérification en cours, sans renvoi.",
+    };
+  }
   if (/spam_risk_too_many_posts|spam_risk_too_many_pending_share/.test(message)) {
     return { errorClass: "account_issue", code: "tt_quota", message: "Quota de publication TikTok atteint pour aujourd'hui." };
   }
   if (/spam_risk_user_banned_from_posting/.test(message)) {
     return { errorClass: "account_issue", code: "tt_banned", message: "TikTok a temporairement bloqué la publication sur ce compte." };
   }
-  if (/access_token_invalid|scope_not_authorized/.test(message)) {
+  if (/access_token_invalid|scope_not_authorized|auth_removed/.test(message)) {
     return { errorClass: "account_issue", code: "tt_token_invalid", message: "Connexion TikTok expirée — reconnectez votre compte." };
+  }
+  // fail_reason du statut FAILED (doc « Get Post Status », vérifiée le 30/09/2026).
+  if (/file_format_check_failed|duration_check_failed|frame_rate_check_failed|picture_size_check_failed/.test(message)) {
+    return {
+      errorClass: "content_rejected",
+      code: "tt_media_rejected",
+      message: "TikTok a refusé le fichier (format, durée, cadence d'images ou dimensions non supportés).",
+    };
+  }
+  if (/spam_risk/.test(message) && !/spam_risk_(too_many|user_banned)/.test(message)) {
+    return { errorClass: "content_rejected", code: "tt_spam_risk", message: "TikTok a jugé cette publication à risque (texte ou envoi)." };
+  }
+  if (/publish_cancelled/.test(message)) {
+    return { errorClass: "content_rejected", code: "tt_cancelled", message: "Envoi annulé côté TikTok." };
   }
   if (/rate_limit_exceeded/.test(message)) {
     return { errorClass: "transient", code: "tt_rate_limited", message: "Limite de requêtes TikTok atteinte, nouvelle tentative en cours." };

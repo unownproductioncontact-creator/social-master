@@ -1,5 +1,58 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { buildTikTokAuthorizeUrl, computeChunkRanges } from "@/lib/providers/tiktok";
+import { buildTikTokAuthorizeUrl, computeChunkRanges, waitForTikTokInbox } from "@/lib/providers/tiktok";
+import { TikTokPublishFailedError, TikTokStillProcessingError } from "@/lib/errors";
+
+describe("waitForTikTokInbox", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Réponses successives de /status/fetch/ au format TikTok { data, error }.
+  function stubStatuses(...bodies: unknown[]) {
+    const fetchMock = vi.fn();
+    for (const body of bodies) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
+    }
+    // Réponse neuve à chaque appel : un corps de Response ne se lit qu'une fois.
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ data: { status: "PROCESSING_UPLOAD" }, error: { code: "ok" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+  const status = (s: string, extra: object = {}) => ({ data: { status: s, ...extra }, error: { code: "ok" } });
+
+  it("résout dès que TikTok a déposé le brouillon dans la boîte de réception", async () => {
+    const fetchMock = stubStatuses(status("PROCESSING_UPLOAD"), status("SEND_TO_USER_INBOX"));
+    await expect(waitForTikTokInbox("tok", "pub_1", 1, 1000)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ publish_id: "pub_1" });
+  });
+
+  it("toujours en traitement après le délai → TikTokStillProcessingError (pas un échec)", async () => {
+    stubStatuses();
+    const err = await waitForTikTokInbox("tok", "pub_lent", 1, 20).catch((e) => e);
+    expect(err).toBeInstanceOf(TikTokStillProcessingError);
+    expect(err.publishId).toBe("pub_lent");
+  });
+
+  it("statut FAILED → TikTokPublishFailedError avec la fail_reason", async () => {
+    stubStatuses(status("FAILED", { fail_reason: "duration_check_failed" }));
+    const err = await waitForTikTokInbox("tok", "pub_2", 1, 1000).catch((e) => e);
+    expect(err).toBeInstanceOf(TikTokPublishFailedError);
+    expect(err.failReason).toBe("duration_check_failed");
+  });
+
+  it("statut absent ou inconnu : jamais pris pour un succès, on continue d'attendre", async () => {
+    stubStatuses({ data: {}, error: { code: "ok" } }, status("QUELQUE_CHOSE"));
+    await expect(waitForTikTokInbox("tok", "pub_3", 1, 20)).rejects.toBeInstanceOf(TikTokStillProcessingError);
+  });
+
+  it("réponse d'erreur TikTok (error.code ≠ ok) → erreur explicite", async () => {
+    stubStatuses({ data: {}, error: { code: "invalid_publish_id", message: "publish_id does not exist" } });
+    await expect(waitForTikTokInbox("tok", "pub_4", 1, 1000)).rejects.toThrow("invalid_publish_id");
+  });
+});
 
 describe("buildTikTokAuthorizeUrl", () => {
   afterEach(() => {

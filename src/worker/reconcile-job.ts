@@ -3,6 +3,74 @@ import { db } from "@/lib/db";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 import { notifyTelegram } from "@/lib/telegram";
 import { recomputePostStatus } from "@/lib/post-status";
+import { decryptToken } from "@/lib/crypto";
+import { classifyTikTokError, TikTokPublishFailedError } from "@/lib/errors";
+import { fetchTikTokPublishStatus, type TikTokPublishStatus } from "@/lib/providers/tiktok";
+import { decideTikTokPendingDraft } from "@/lib/tiktok-draft";
+import { afterTargetDelivered, composeCaption, markFailure } from "@/worker/publish-job";
+
+/**
+ * Suivi d'un brouillon TikTok transmis (publish_id connu) mais pas encore confirmé : on interroge TikTok
+ * sur CE publish_id — jamais de renvoi du média. Livré → SENT_TO_INBOX ; FAILED → échec classé ; toujours
+ * en traitement → on repasse au prochain cycle (aucune écriture, pour rester éligible) ; au-delà de 2 h
+ * → échec « non confirmé » avec vérification manuelle. Retourne true si la cible a été résolue.
+ */
+async function followUpTikTokDraft(postTargetId: string): Promise<boolean> {
+  const target = await db.postTarget.findUnique({
+    where: { id: postTargetId },
+    include: { post: true, socialAccount: true },
+  });
+  if (!target || target.status !== "PROCESSING" || !target.tiktokPublishId) return false;
+
+  let status: TikTokPublishStatus | null = null;
+  let failReason: string | undefined;
+  try {
+    ({ status, failReason } = await fetchTikTokPublishStatus(
+      decryptToken(target.socialAccount.accessTokenEnc),
+      target.tiktokPublishId
+    ));
+  } catch (err) {
+    console.error(`[reconcile] statut TikTok illisible (target ${target.id})`, err);
+  }
+
+  const decision = decideTikTokPendingDraft({
+    status,
+    uploadedAt: target.tiktokUploadedAt ?? target.updatedAt,
+    now: new Date(),
+  });
+  if (decision === "wait") return false;
+
+  const job = await db.publishJob.findFirst({ where: { postTargetId: target.id }, orderBy: { createdAt: "desc" } });
+
+  if (decision === "delivered") {
+    await db.postTarget.update({
+      where: { id: target.id },
+      data: { status: "SENT_TO_INBOX", publishedAt: new Date(), errorCode: null, errorMessage: null },
+    });
+    if (job) await db.publishJob.update({ where: { id: job.id }, data: { state: "COMPLETED" } });
+    await afterTargetDelivered(target, composeCaption(target));
+    return true;
+  }
+
+  if (decision === "failed") {
+    const failure = new TikTokPublishFailedError(failReason ?? "raison inconnue");
+    const classified = classifyTikTokError(failure);
+    await db.postTarget.update({ where: { id: target.id }, data: { tiktokPublishId: null, tiktokUploadedAt: null } });
+    await markFailure(target.id, job?.idempotencyKey ?? "", true, classified.code, classified.message, failure.message);
+    return true;
+  }
+
+  // "expired"
+  await markFailure(
+    target.id,
+    job?.idempotencyKey ?? "",
+    true,
+    "tt_unconfirmed",
+    "TikTok n'a pas confirmé le brouillon en 2 h — vérifiez vos notifications TikTok avant de reprogrammer.",
+    `publish_id ${target.tiktokPublishId} toujours non livré (dernier statut : ${status ?? "illisible"})`
+  );
+  return true;
+}
 
 const STUCK_WAITING_MINUTES = 10;
 const STUCK_PROCESSING_MINUTES = 15;
@@ -16,6 +84,8 @@ const STUCK_PROCESSING_MINUTES = 15;
  * 2. PostTarget bloqués en PROCESSING depuis 15+ min : le traitement a été interrompu en plein vol
  *    (crash worker). On NE réessaie JAMAIS automatiquement ici — risque de double-publication réelle
  *    si la plateforme avait déjà accepté le contenu — on marque en échec pour vérification manuelle.
+ *    Exception : un brouillon TikTok dont le publish_id est connu (média déjà chez TikTok) n'est pas
+ *    « interrompu » — on interroge TikTok sur ce publish_id (followUpTikTokDraft, CLAUDE.md §27).
  */
 export async function runReconciliation(): Promise<void> {
   const boss = getBoss();
@@ -43,7 +113,16 @@ export async function runReconciliation(): Promise<void> {
     where: { status: "PROCESSING", updatedAt: { lt: processingCutoff } },
   });
 
+  let interrupted = 0;
   for (const target of stuckProcessing) {
+    // Brouillon TikTok déjà transmis : on suit son statut au lieu de le déclarer interrompu.
+    if (target.platform === "TIKTOK" && target.tiktokPublishId) {
+      await followUpTikTokDraft(target.id).catch((err) =>
+        console.error(`[reconcile] suivi du brouillon TikTok échoué (target ${target.id})`, err)
+      );
+      continue;
+    }
+    interrupted++;
     await db.postTarget.update({
       where: { id: target.id },
       data: {
@@ -54,9 +133,9 @@ export async function runReconciliation(): Promise<void> {
     });
     await recomputePostStatus(target.postId);
   }
-  if (stuckProcessing.length > 0) {
+  if (interrupted > 0) {
     await notifyTelegram(
-      `⚠️ Réconciliation : ${stuckProcessing.length} publication(s) interrompue(s) en plein vol — vérification manuelle requise (voir Historique).`
+      `⚠️ Réconciliation : ${interrupted} publication(s) interrompue(s) en plein vol — vérification manuelle requise (voir Historique).`
     );
   }
 }

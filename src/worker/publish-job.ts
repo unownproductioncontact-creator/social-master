@@ -8,7 +8,8 @@ import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, need
 import { recomputePostStatus } from "@/lib/post-status";
 import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
-import { publishTikTokDraftVideo, publishTikTokDraftPhoto } from "@/lib/providers/tiktok";
+import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from "@/lib/providers/tiktok";
+import { deliverTikTokDraft } from "@/lib/tiktok-draft";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
 import { notifyTelegram } from "@/lib/telegram";
@@ -16,6 +17,55 @@ import { appUrl } from "@/lib/app-url";
 
 type PublishJobData = { postTargetId: string; idempotencyKey: string };
 type JobResult = { id: string; status: "completed" | "failed" | "deadletter" };
+
+/** Légende finale d'une cible : override éventuel sinon légende du post, puis la ligne de hashtags. */
+export function composeCaption(target: {
+  captionOverride: string | null;
+  post: { caption: string; hashtags: string[] };
+}): string {
+  const hashtagLine = target.post.hashtags.map((h) => `#${h}`).join(" ");
+  return [target.captionOverride ?? target.post.caption, hashtagLine].filter(Boolean).join("\n\n");
+}
+
+/**
+ * Suites communes d'une livraison réussie (publication, ou brouillon TikTok — y compris confirmé en
+ * différé par la réconciliation) : notif Telegram, journal, statut du post, purge éventuelle des médias.
+ */
+export async function afterTargetDelivered(
+  target: { id: string; platform: string; postId: string; post: { userId: string } },
+  caption: string
+): Promise<void> {
+  // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
+  // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
+  // (copie en un appui long, zéro navigation) là où TikTok notifie le brouillon. La légende réutilise
+  // EXACTEMENT le `caption` composé plus haut (même format que le bouton « Copier la légende »).
+  // Best-effort : notifyTelegram est un no-op silencieux si non configuré et n'échoue jamais bruyamment.
+  if (target.platform === "TIKTOK") {
+    await notifyTelegram(
+      `📥 Brouillon TikTok déposé — ouvre tes notifications TikTok pour finaliser.\n\n` +
+        `Légende à copier :\n${caption}\n\n${appUrl()}/composer/${target.postId}`
+    );
+  }
+
+  await db.activityLog.create({
+    data: {
+      userId: target.post.userId,
+      entityType: "PostTarget",
+      entityId: target.id,
+      action: `${target.platform.toLowerCase()}_published`,
+      detail: { postId: target.postId },
+    },
+  });
+  const resolvedStatus = await recomputePostStatus(target.postId);
+  // Purge immédiate des médias devenus inutiles si le post est entièrement publié ET que le
+  // propriétaire a choisi la rétention « Dès la publication » (no-op sinon). Best-effort : ne doit
+  // jamais faire échouer la publication déjà réussie.
+  if (resolvedStatus === "PUBLISHED") {
+    await purgeMediaForPublishedPost(target.postId).catch((err) =>
+      console.error(`[publish-job] purge immédiate échouée (post ${target.postId})`, err)
+    );
+  }
+}
 
 async function processTarget(postTargetId: string): Promise<void> {
   const target = await db.postTarget.findUnique({
@@ -39,8 +89,7 @@ async function processTarget(postTargetId: string): Promise<void> {
   if (orderedMedia.length === 0) throw new Error("Aucun média associé à ce post.");
 
   const accessToken = decryptToken(target.socialAccount.accessTokenEnc);
-  const hashtagLine = target.post.hashtags.map((h) => `#${h}`).join(" ");
-  const caption = [target.captionOverride ?? target.post.caption, hashtagLine].filter(Boolean).join("\n\n");
+  const caption = composeCaption(target);
 
   if (target.platform === "INSTAGRAM") {
     const quota = await getContentPublishingLimit(target.socialAccount.platformAccountId, accessToken);
@@ -139,19 +188,24 @@ async function processTarget(postTargetId: string): Promise<void> {
         errorMessage: null,
       },
     });
-  } else if (target.contentType === "TIKTOK_PHOTO") {
-    await publishTikTokDraftPhoto(
-      accessToken,
-      orderedMedia.map((m) => getPublicMediaUrl(m.storageKey))
-    );
-    await db.postTarget.update({
-      where: { id: postTargetId },
-      data: { status: "SENT_TO_INBOX", publishedAt: new Date(), errorCode: null, errorMessage: null },
-    });
   } else {
-    // TikTok vidéo : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas auditée.
-    const media = orderedMedia[0];
-    await publishTikTokDraftVideo(accessToken, media.storageKey, media.sizeBytes);
+    // TikTok (vidéo ou photo) : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas
+    // auditée. Un retry ne renvoie JAMAIS un média que TikTok détient déjà (publish_id persisté) : il
+    // reprend seulement l'attente de livraison (CLAUDE.md §27, doublons du 30/09/2026).
+    await deliverTikTokDraft({
+      existingPublishId: target.tiktokPublishId,
+      start: () =>
+        target.contentType === "TIKTOK_PHOTO"
+          ? startTikTokDraftPhoto(accessToken, orderedMedia.map((m) => getPublicMediaUrl(m.storageKey)))
+          : startTikTokDraftVideo(accessToken, orderedMedia[0].storageKey, orderedMedia[0].sizeBytes),
+      savePublishId: async (publishId) => {
+        await db.postTarget.update({
+          where: { id: postTargetId },
+          data: { tiktokPublishId: publishId, tiktokUploadedAt: publishId ? new Date() : null },
+        });
+      },
+      waitForInbox: (publishId) => waitForTikTokInbox(accessToken, publishId),
+    });
 
     await db.postTarget.update({
       where: { id: postTargetId },
@@ -159,39 +213,10 @@ async function processTarget(postTargetId: string): Promise<void> {
     });
   }
 
-  // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
-  // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
-  // (copie en un appui long, zéro navigation) là où TikTok notifie le brouillon. La légende réutilise
-  // EXACTEMENT le `caption` composé plus haut (même format que le bouton « Copier la légende »).
-  // Best-effort : notifyTelegram est un no-op silencieux si non configuré et n'échoue jamais bruyamment.
-  if (target.platform === "TIKTOK") {
-    await notifyTelegram(
-      `📥 Brouillon TikTok déposé — ouvre tes notifications TikTok pour finaliser.\n\n` +
-        `Légende à copier :\n${caption}\n\n${appUrl()}/composer/${target.postId}`
-    );
-  }
-
-  await db.activityLog.create({
-    data: {
-      userId: target.post.userId,
-      entityType: "PostTarget",
-      entityId: postTargetId,
-      action: `${target.platform.toLowerCase()}_published`,
-      detail: { postId: target.postId },
-    },
-  });
-  const resolvedStatus = await recomputePostStatus(target.postId);
-  // Purge immédiate des médias devenus inutiles si le post est entièrement publié ET que le
-  // propriétaire a choisi la rétention « Dès la publication » (no-op sinon). Best-effort : ne doit
-  // jamais faire échouer la publication déjà réussie.
-  if (resolvedStatus === "PUBLISHED") {
-    await purgeMediaForPublishedPost(target.postId).catch((err) =>
-      console.error(`[publish-job] purge immédiate échouée (post ${target.postId})`, err)
-    );
-  }
+  await afterTargetDelivered(target, caption);
 }
 
-async function markFailure(
+export async function markFailure(
   postTargetId: string,
   idempotencyKey: string,
   isTerminal: boolean,
@@ -261,6 +286,25 @@ export async function handlePublishBatch(
         : target?.platform === "YOUTUBE"
           ? classifyYouTubeError(err)
           : classifyInstagramError(err);
+
+    // Brouillon TikTok transmis mais pas encore confirmé à la dernière tentative : ce n'est PAS un échec
+    // (TikTok peut encore le livrer) — la cible reste en cours et la réconciliation reprend la
+    // vérification du même publish_id toutes les 5 min, jusqu'à 2 h (CLAUDE.md §27).
+    if (classified.code === "tt_processing" && isLastAttempt) {
+      await db.postTarget.update({
+        where: { id: postTargetId },
+        data: {
+          status: "PROCESSING",
+          errorCode: "tt_processing",
+          errorMessage: "TikTok n'a pas encore confirmé le brouillon — vérification automatique toutes les 5 min (jusqu'à 2 h).",
+        },
+      });
+      await db.publishJob
+        .update({ where: { idempotencyKey }, data: { attempt: { increment: 1 }, lastError: rawError } })
+        .catch(() => {});
+      console.error(`[publish-job] brouillon TikTok non confirmé, relais à la réconciliation (target ${postTargetId}) : ${rawError}`);
+      return [{ id: job.id, status: "failed" }];
+    }
 
     const isTerminal = classified.errorClass !== "transient" || isLastAttempt;
     await markFailure(postTargetId, idempotencyKey, isTerminal, classified.code, classified.message, rawError);

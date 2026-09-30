@@ -1,6 +1,7 @@
 import "server-only";
 import { getObjectStream } from "@/lib/storage";
 import { appUrl } from "@/lib/app-url";
+import { TikTokPublishFailedError, TikTokStillProcessingError } from "@/lib/errors";
 
 const AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/";
 const TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/";
@@ -251,9 +252,18 @@ async function uploadVideoToTikTok(uploadUrl: string, storageKey: string, totalS
   }
 }
 
-type PublishStatus = "PROCESSING_UPLOAD" | "PROCESSING_DOWNLOAD" | "SEND_TO_USER_INBOX" | "PUBLISH_COMPLETE" | "FAILED";
+export type TikTokPublishStatus =
+  | "PROCESSING_UPLOAD"
+  | "PROCESSING_DOWNLOAD"
+  | "SEND_TO_USER_INBOX"
+  | "PUBLISH_COMPLETE"
+  | "FAILED";
 
-async function fetchPublishStatus(accessToken: string, publishId: string): Promise<{ status: PublishStatus; failReason?: string }> {
+/** Statut d'un envoi TikTok (doc « Get Post Status »). `status` vaut null si TikTok n'en renvoie aucun. */
+export async function fetchTikTokPublishStatus(
+  accessToken: string,
+  publishId: string
+): Promise<{ status: TikTokPublishStatus | null; failReason?: string }> {
   const res = await fetch(STATUS_FETCH_URL, {
     method: "POST",
     headers: {
@@ -267,20 +277,22 @@ async function fetchPublishStatus(accessToken: string, publishId: string): Promi
     throw new Error(`Lecture du statut TikTok échouée (${res.status}): ${text}`);
   }
   const json = await res.json();
-  return { status: json.data?.status, failReason: json.data?.fail_reason };
+  if (json.error?.code && json.error.code !== "ok") {
+    throw new Error(`Lecture du statut TikTok refusée : ${json.error.code} — ${json.error.message}`);
+  }
+  return { status: json.data?.status ?? null, failReason: json.data?.fail_reason };
 }
 
 /**
- * Orchestre l'envoi d'une vidéo en brouillon TikTok (inbox) : init → upload par chunks → poll
- * jusqu'à SEND_TO_USER_INBOX. Aucune caption possible ici (saisie par l'utilisateur dans l'app TikTok).
+ * Démarre un brouillon vidéo TikTok (inbox) : init → upload par chunks. Retourne le `publish_id` une
+ * fois le fichier ENTIÈREMENT transmis — c'est à partir de là que TikTok peut livrer le brouillon, et
+ * donc qu'un renvoi créerait un doublon. Aucune caption possible (saisie dans l'app TikTok).
  */
-export async function publishTikTokDraftVideo(
+export async function startTikTokDraftVideo(
   accessToken: string,
   storageKey: string,
-  videoSizeBytes: number,
-  pollIntervalMs = 3000,
-  maxWaitMs = 5 * 60 * 1000
-): Promise<void> {
+  videoSizeBytes: number
+): Promise<string> {
   const ranges = computeChunkRanges(videoSizeBytes);
   // chunk_size déclaré : la taille du fichier s'il tient en un chunk (≤ 64 Mo), sinon 64 Mo — JAMAIS
   // la taille réelle d'un gros fichier mono-chunk (ex. 100 Mo), qui dépasserait le plafond de 64 Mo.
@@ -288,18 +300,33 @@ export async function publishTikTokDraftVideo(
 
   const { publish_id, upload_url } = await initInboxVideoUpload(accessToken, videoSizeBytes, chunkSize, ranges.length);
   await uploadVideoToTikTok(upload_url, storageKey, videoSizeBytes);
+  return publish_id;
+}
 
+/**
+ * Attend que TikTok ait déposé le brouillon dans la boîte de réception du créateur.
+ * - SEND_TO_USER_INBOX / PUBLISH_COMPLETE → résolu.
+ * - FAILED → TikTokPublishFailedError (aucun brouillon ne sera livré).
+ * - Toujours en traitement après `maxWaitMs` → TikTokStillProcessingError : PAS un échec, TikTok peut
+ *   encore livrer (constaté le 30/09/2026 : ~15 min) — l'appelant reprend plus tard le MÊME publish_id.
+ * Un statut absent ou inconnu n'est jamais pris pour un succès : on continue d'attendre.
+ */
+export async function waitForTikTokInbox(
+  accessToken: string,
+  publishId: string,
+  pollIntervalMs = 3000,
+  maxWaitMs = 5 * 60 * 1000
+): Promise<void> {
   const start = Date.now();
-  let status: PublishStatus = "PROCESSING_UPLOAD";
-  while (status === "PROCESSING_UPLOAD" || status === "PROCESSING_DOWNLOAD") {
+  for (;;) {
     if (Date.now() - start > maxWaitMs) {
-      throw new Error("Délai de traitement TikTok dépassé.");
+      throw new TikTokStillProcessingError(publishId);
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    const result = await fetchPublishStatus(accessToken, publish_id);
-    status = result.status;
+    const { status, failReason } = await fetchTikTokPublishStatus(accessToken, publishId);
+    if (status === "SEND_TO_USER_INBOX" || status === "PUBLISH_COMPLETE") return;
     if (status === "FAILED") {
-      throw new Error(`Publication TikTok en échec : ${result.failReason ?? "raison inconnue"}`);
+      throw new TikTokPublishFailedError(failReason ?? "raison inconnue");
     }
   }
 }
@@ -351,30 +378,14 @@ async function initPhotoPost(
   return json.data as PhotoInitResponse;
 }
 
-/** Envoie un post photo TikTok en brouillon (1 à 35 images, URLs publiques déjà vérifiées auprès de TikTok). */
-export async function publishTikTokDraftPhoto(
-  accessToken: string,
-  photoUrls: string[],
-  pollIntervalMs = 3000,
-  maxWaitMs = 5 * 60 * 1000
-): Promise<void> {
+/**
+ * Démarre un post photo TikTok en brouillon (1 à 35 images, URLs publiques déjà vérifiées auprès de
+ * TikTok) et retourne son `publish_id` (TikTok télécharge ensuite les images lui-même).
+ */
+export async function startTikTokDraftPhoto(accessToken: string, photoUrls: string[]): Promise<string> {
   if (photoUrls.length < 1 || photoUrls.length > 35) {
     throw new Error("Un post photo TikTok doit contenir entre 1 et 35 images.");
   }
-
   const { publish_id } = await initPhotoPost(accessToken, photoUrls, 0);
-
-  const start = Date.now();
-  let status: PublishStatus = "PROCESSING_UPLOAD";
-  while (status === "PROCESSING_UPLOAD" || status === "PROCESSING_DOWNLOAD") {
-    if (Date.now() - start > maxWaitMs) {
-      throw new Error("Délai de traitement TikTok dépassé.");
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    const result = await fetchPublishStatus(accessToken, publish_id);
-    status = result.status;
-    if (status === "FAILED") {
-      throw new Error(`Publication photo TikTok en échec : ${result.failReason ?? "raison inconnue"}`);
-    }
-  }
+  return publish_id;
 }

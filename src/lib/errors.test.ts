@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
+import {
+  classifyInstagramError,
+  classifyTikTokError,
+  classifyYouTubeError,
+  needsReauth,
+  TikTokPublishFailedError,
+  TikTokStillProcessingError,
+} from "@/lib/errors";
 
 describe("classifyInstagramError", () => {
   // Reproduit le vrai message levé par graphFetch : "... (${status}): ${corps JSON brut Meta}".
@@ -107,6 +114,29 @@ describe("classifyTikTokError", () => {
     const result = classifyTikTokError(new Error("mystery failure"));
     expect(result.errorClass).toBe("transient");
     expect(result.code).toBe("tt_unknown");
+  });
+
+  it("traitement TikTok trop long → transitoire tt_processing (reprise sans renvoi)", () => {
+    const result = classifyTikTokError(new TikTokStillProcessingError("pub_123"));
+    expect(result.errorClass).toBe("transient");
+    expect(result.code).toBe("tt_processing");
+  });
+
+  it("fail_reason de statut FAILED : fichier refusé → content_rejected (jamais retenté)", () => {
+    for (const reason of ["file_format_check_failed", "duration_check_failed", "frame_rate_check_failed", "picture_size_check_failed"]) {
+      const result = classifyTikTokError(new TikTokPublishFailedError(reason));
+      expect(result.errorClass).toBe("content_rejected");
+      expect(result.code).toBe("tt_media_rejected");
+    }
+  });
+
+  it("fail_reason auth_removed → reconnexion ; spam_risk_too_many_posts → quota ; internal → transitoire", () => {
+    const auth = classifyTikTokError(new TikTokPublishFailedError("auth_removed"));
+    expect(auth.code).toBe("tt_token_invalid");
+    expect(needsReauth(auth.code)).toBe(true);
+    expect(classifyTikTokError(new TikTokPublishFailedError("spam_risk_too_many_posts")).code).toBe("tt_quota");
+    expect(classifyTikTokError(new TikTokPublishFailedError("spam_risk_text")).code).toBe("tt_spam_risk");
+    expect(classifyTikTokError(new TikTokPublishFailedError("internal")).errorClass).toBe("transient");
   });
 });
 

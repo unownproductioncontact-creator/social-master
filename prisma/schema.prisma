@@ -193,6 +193,12 @@ model PostTarget {
   publishedAt     DateTime?
   errorCode       String?
   errorMessage    String?
+  // Brouillon TikTok (inbox) : `publish_id` renvoyé par TikTok une fois le fichier ENTIÈREMENT transmis
+  // (vidéo) ou l'init acceptée (photo). Tant qu'il est renseigné, un retry ne renvoie JAMAIS le média :
+  // il reprend seulement la vérification du statut (sinon un traitement TikTok lent = brouillons en
+  // double, constaté le 30/09/2026). Remis à null à chaque (re)programmation. Voir CLAUDE.md §27.
+  tiktokPublishId  String?
+  tiktokUploadedAt DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
