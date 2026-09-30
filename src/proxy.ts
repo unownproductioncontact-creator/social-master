@@ -14,7 +14,11 @@ export default async function proxy(req: NextRequest) {
   const isAuthenticated = Boolean(session?.userId);
 
   if (!isPublicRoute && !isAuthenticated) {
-    return NextResponse.redirect(new URL("/login", req.nextUrl));
+    // On mémorise la page demandée (?next=) pour y revenir après connexion — indispensable pour le
+    // consentement OAuth du connecteur Claude (/oauth/authorize?…, CLAUDE.md §29).
+    const loginUrl = new URL("/login", req.nextUrl);
+    loginUrl.searchParams.set("next", `${path}${req.nextUrl.search}`);
+    return NextResponse.redirect(loginUrl);
   }
 
   if ((path === "/login" || path === "/register") && isAuthenticated) {
@@ -27,5 +31,6 @@ export default async function proxy(req: NextRequest) {
 export const config = {
   // `txt`/`ico` exclus pour que les fichiers statiques de public/ (ex. la vérification
   // de domaine TikTok `tiktok*.txt`) soient servis sans passer par la redirection d'auth.
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp|txt|ico)$).*)"],
+  // `.well-known` : métadonnées OAuth publiques du connecteur Claude (RFC 8414 / RFC 9728).
+  matcher: ["/((?!api|\\.well-known|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp|txt|ico)$).*)"],
 };

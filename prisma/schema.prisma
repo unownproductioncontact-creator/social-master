@@ -86,6 +86,8 @@ model User {
   mediaAssets    MediaAsset[]
   posts          Post[]
   activityLogs   ActivityLog[]
+  oauthAuthCodes OAuthAuthCode[]
+  oauthTokens    OAuthToken[]
 
   @@map("users")
 }
@@ -242,4 +244,64 @@ model ActivityLog {
   @@index([userId, createdAt])
   @@index([entityType, entityId])
   @@map("activity_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Connecteur Claude (serveur MCP distant, CLAUDE.md §29) — serveur d'autorisation OAuth 2.1 minimal :
+// enregistrement dynamique des clients (RFC 7591), code + PKCE S256, jetons opaques stockés HASHÉS
+// (SHA-256) — jamais en clair en base. Révocation depuis Paramètres.
+// ---------------------------------------------------------------------------
+
+/// Client OAuth enregistré dynamiquement (ex. Claude) — `id` = client_id.
+model OAuthClient {
+  id                      String   @id @default(cuid())
+  name                    String
+  redirectUris            String[]
+  // "none" (client public + PKCE) ou "client_secret_post"/"client_secret_basic" (secret hashé).
+  tokenEndpointAuthMethod String   @default("none")
+  secretHash              String?
+  createdAt               DateTime @default(now())
+
+  authCodes OAuthAuthCode[]
+  tokens    OAuthToken[]
+
+  @@map("oauth_clients")
+}
+
+/// Code d'autorisation : usage unique, 10 min, hashé ; PKCE S256 obligatoire.
+model OAuthAuthCode {
+  id            String      @id @default(cuid())
+  codeHash      String      @unique
+  clientId      String
+  client        OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  redirectUri   String
+  codeChallenge String
+  scope         String      @default("")
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime    @default(now())
+
+  @@map("oauth_auth_codes")
+}
+
+/// Accès accordé à un client : jeton d'accès (1 h) + jeton de rafraîchissement (90 j, rotation), hashés.
+model OAuthToken {
+  id               String      @id @default(cuid())
+  clientId         String
+  client           OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessTokenHash  String      @unique
+  refreshTokenHash String      @unique
+  scope            String      @default("")
+  accessExpiresAt  DateTime
+  refreshExpiresAt DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime?
+  createdAt        DateTime    @default(now())
+
+  @@index([userId])
+  @@map("oauth_tokens")
 }

@@ -5,6 +5,11 @@ import { ProfileForm } from "@/components/settings/profile-form";
 import { MediaRetentionForm } from "@/components/settings/media-retention-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/page-header";
+import { ClaudeAccess } from "@/components/settings/claude-access";
+import { listActiveGrants } from "@/lib/mcp/oauth-store";
+import { mcpResourceUrl } from "@/lib/mcp/oauth-core";
+import { issuer } from "@/lib/mcp/http";
+import { formatInTimeZone } from "date-fns-tz";
 
 export default async function SettingsPage() {
   const user = await getCurrentUser();
@@ -14,6 +19,13 @@ export default async function SettingsPage() {
     where: { id: user.id },
     select: { mediaRetentionDays: true },
   });
+  const fmt = (d: Date) => formatInTimeZone(d, user.timezone, "dd/MM/yyyy HH:mm");
+  const grants = (await listActiveGrants(user.id)).map((g) => ({
+    id: g.id,
+    clientName: g.clientName,
+    createdAt: fmt(g.createdAt),
+    lastUsedAt: g.lastUsedAt ? fmt(g.lastUsedAt) : null,
+  }));
 
   return (
     <div className="space-y-6">
@@ -34,6 +46,15 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent className="py-3.5">
           <MediaRetentionForm mediaRetentionDays={prefs?.mediaRetentionDays ?? null} />
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-md gap-0 py-0">
+        <CardHeader className="border-b border-border py-0">
+          <CardTitle className="px-0.5 py-3 text-[13.5px]">Claude (connecteur)</CardTitle>
+        </CardHeader>
+        <CardContent className="py-3.5">
+          <ClaudeAccess grants={grants} connectorUrl={mcpResourceUrl(issuer())} />
         </CardContent>
       </Card>
 

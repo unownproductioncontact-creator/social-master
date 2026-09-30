@@ -119,10 +119,19 @@ export async function login(_state: AuthFormState, formData: FormData): Promise<
   }
 
   await createSession(user.id);
-  redirect("/dashboard");
+  redirect(safeNextPath(formData.get("next")) ?? "/dashboard");
 }
 
 export async function logout(): Promise<void> {
   await deleteSession();
   redirect("/login");
+}
+
+/**
+ * Page de retour après connexion (?next=) : chemin RELATIF à l'app uniquement — jamais une URL externe
+ * ni « //hôte » (redirection ouverte).
+ */
+function safeNextPath(value: FormDataEntryValue | null): string | null {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return null;
+  return value;
 }
