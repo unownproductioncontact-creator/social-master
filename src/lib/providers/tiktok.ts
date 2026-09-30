@@ -40,6 +40,10 @@ export function buildTikTokAuthorizeUrl(state: string): string {
   url.searchParams.set("scope", TIKTOK_SCOPES.join(","));
   url.searchParams.set("redirect_uri", getRedirectUri());
   url.searchParams.set("state", state);
+  // Toujours afficher la page d'autorisation TikTok (doc Login Kit Web : 1 = toujours, 0 = sautée
+  // pour une session déjà autorisée). Sans ça, « Reconnecter » repassait en silence avec le compte
+  // ouvert sur tiktok.com, sans le montrer ni laisser en changer (constaté le 30/09/2026).
+  url.searchParams.set("disable_auto_auth", "1");
   return url.toString();
 }
 

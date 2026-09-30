@@ -1,5 +1,27 @@
-import { describe, it, expect } from "vitest";
-import { computeChunkRanges } from "@/lib/providers/tiktok";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { buildTikTokAuthorizeUrl, computeChunkRanges } from "@/lib/providers/tiktok";
+
+describe("buildTikTokAuthorizeUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("force l'affichage de la page d'autorisation et transmet les paramètres OAuth", () => {
+    vi.stubEnv("TIKTOK_CLIENT_KEY", "ck_test");
+    vi.stubEnv("TIKTOK_CLIENT_SECRET", "cs_test");
+    vi.stubEnv("APP_URL", "https://example.test/");
+
+    const url = new URL(buildTikTokAuthorizeUrl("etat-123"));
+
+    expect(url.origin + url.pathname).toBe("https://www.tiktok.com/v2/auth/authorize/");
+    expect(url.searchParams.get("disable_auto_auth")).toBe("1");
+    expect(url.searchParams.get("client_key")).toBe("ck_test");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("scope")).toBe("user.info.basic,video.upload");
+    expect(url.searchParams.get("redirect_uri")).toBe("https://example.test/api/oauth/tiktok/callback");
+    expect(url.searchParams.get("state")).toBe("etat-123");
+  });
+});
 
 const MB = 1024 * 1024;
 const MAX_CHUNK = 64 * MB;
