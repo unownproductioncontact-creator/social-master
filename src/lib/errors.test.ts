@@ -138,6 +138,12 @@ describe("classifyTikTokError", () => {
     expect(classifyTikTokError(new TikTokPublishFailedError("spam_risk_text")).code).toBe("tt_spam_risk");
     expect(classifyTikTokError(new TikTokPublishFailedError("internal")).errorClass).toBe("transient");
   });
+
+  it("refresh token refusé (invalid_grant) → reconnexion requise, pas de retry inutile", () => {
+    const result = classifyTikTokError(new Error("Refresh token TikTok refusé : invalid_grant — Refresh token is invalid"));
+    expect(result.code).toBe("tt_token_invalid");
+    expect(needsReauth(result.code)).toBe(true);
+  });
 });
 
 describe("classifyYouTubeError", () => {

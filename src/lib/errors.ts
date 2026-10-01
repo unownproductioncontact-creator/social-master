@@ -145,7 +145,8 @@ export function classifyTikTokError(err: unknown): ClassifiedError {
   if (/spam_risk_user_banned_from_posting/.test(message)) {
     return { errorClass: "account_issue", code: "tt_banned", message: "TikTok a temporairement bloqué la publication sur ce compte." };
   }
-  if (/access_token_invalid|scope_not_authorized|auth_removed/.test(message)) {
+  // invalid_grant = refresh token TikTok refusé (expiré/révoqué) : seule une reconnexion répare.
+  if (/access_token_invalid|scope_not_authorized|auth_removed|invalid_grant/.test(message)) {
     return { errorClass: "account_issue", code: "tt_token_invalid", message: "Connexion TikTok expirée — reconnectez votre compte." };
   }
   // fail_reason du statut FAILED (doc « Get Post Status », vérifiée le 30/09/2026).

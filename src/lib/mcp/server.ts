@@ -15,7 +15,7 @@ import { appUrl } from "@/lib/app-url";
 import { buildStorageKey } from "@/lib/storage";
 import { resolveShareLink } from "@/lib/media-import/share-link";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { decryptToken } from "@/lib/crypto";
+import { freshTikTokAccessToken, type TikTokAccountTokens } from "@/lib/tiktok-token";
 import { fetchTikTokPublishStatus } from "@/lib/providers/tiktok";
 import { tiktokReception } from "@/lib/tiktok-draft";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
@@ -50,16 +50,17 @@ function fail(message: string): ToolResult {
  * Ce que TikTok a réellement reçu pour un envoi (statut + octets reçus vs taille du fichier), lu EN DIRECT
  * — pour vérifier qu'un brouillon est arrivé entier. Jamais bloquant : erreur lisible si TikTok ne répond pas.
  */
-async function readTikTokReception(accessTokenEnc: string, publishId: string, expectedBytes: number | undefined) {
+async function readTikTokReception(account: TikTokAccountTokens, publishId: string, expectedBytes: number | undefined) {
   try {
-    const state = await fetchTikTokPublishStatus(decryptToken(accessTokenEnc), publishId, AbortSignal.timeout(5000));
+    const token = await freshTikTokAccessToken(account);
+    const state = await fetchTikTokPublishStatus(token, publishId, AbortSignal.timeout(5000));
     return {
       tiktok_status: state.status,
       ...tiktokReception(state.uploadedBytes, expectedBytes),
       fail_reason: state.failReason,
     };
-  } catch {
-    return { error: "Statut TikTok illisible pour l'instant (jeton expiré ou TikTok injoignable)." };
+  } catch (err) {
+    return { error: `Statut TikTok illisible pour l'instant : ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -252,7 +253,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
             .map(async (t) => [
               t.id,
               await readTikTokReception(
-                t.socialAccount.accessTokenEnc,
+                t.socialAccount,
                 t.tiktokPublishId!,
                 t.contentType === "TIKTOK_VIDEO" ? video?.sizeBytes : undefined
               ),

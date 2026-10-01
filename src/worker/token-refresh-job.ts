@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { decryptToken, encryptToken } from "@/lib/crypto";
 import { refreshLongLivedToken } from "@/lib/providers/instagram";
-import { refreshTikTokToken } from "@/lib/providers/tiktok";
+import { freshTikTokAccessToken, type TikTokAccountTokens } from "@/lib/tiktok-token";
 import { notifyTelegram } from "@/lib/telegram";
 
 const IG_REFRESH_THRESHOLD_DAYS = 10; // token longue durée = 60 j, on rafraîchit largement en avance
@@ -60,28 +60,6 @@ async function maybeRefreshInstagram(account: { id: string; accessTokenEnc: stri
   });
 }
 
-async function maybeRefreshTikTok(account: {
-  id: string;
-  refreshTokenEnc: string | null;
-  tokenExpiresAt: Date | null;
-}) {
-  if (!account.refreshTokenEnc || !account.tokenExpiresAt) return;
-  const hoursLeft = (account.tokenExpiresAt.getTime() - Date.now()) / (3600 * 1000);
-  if (hoursLeft > TIKTOK_REFRESH_THRESHOLD_HOURS) return;
-
-  const refreshToken = decryptToken(account.refreshTokenEnc);
-  const refreshed = await refreshTikTokToken(refreshToken);
-  const now = Date.now();
-
-  await db.socialAccount.update({
-    where: { id: account.id },
-    data: {
-      accessTokenEnc: encryptToken(refreshed.access_token),
-      // Le refresh_token peut avoir changé (rotation) — toujours restocker la valeur retournée.
-      refreshTokenEnc: encryptToken(refreshed.refresh_token),
-      tokenExpiresAt: new Date(now + refreshed.expires_in * 1000),
-      refreshExpiresAt: new Date(now + refreshed.refresh_expires_in * 1000),
-      lastCheckedAt: new Date(),
-    },
-  });
+async function maybeRefreshTikTok(account: TikTokAccountTokens) {
+  await freshTikTokAccessToken(account, TIKTOK_REFRESH_THRESHOLD_HOURS * 3600 * 1000);
 }

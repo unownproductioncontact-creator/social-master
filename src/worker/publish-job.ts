@@ -10,6 +10,7 @@ import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from "@/lib/providers/tiktok";
 import { deliverTikTokDraft, tiktokReception, type TikTokReception } from "@/lib/tiktok-draft";
+import { freshTikTokAccessToken } from "@/lib/tiktok-token";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
@@ -90,7 +91,11 @@ async function processTarget(postTargetId: string): Promise<void> {
     .map((pm) => pm.mediaAsset);
   if (orderedMedia.length === 0) throw new Error("Aucun média associé à ce post.");
 
-  const accessToken = decryptToken(target.socialAccount.accessTokenEnc);
+  // TikTok : jeton de 24 h, rafraîchi juste avant usage s'il expire bientôt (CLAUDE.md §32).
+  const accessToken =
+    target.platform === "TIKTOK"
+      ? await freshTikTokAccessToken(target.socialAccount)
+      : decryptToken(target.socialAccount.accessTokenEnc);
   const caption = composeCaption(target);
 
   if (target.platform === "INSTAGRAM") {

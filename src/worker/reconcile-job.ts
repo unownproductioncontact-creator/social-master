@@ -3,10 +3,10 @@ import { db } from "@/lib/db";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 import { notifyTelegram } from "@/lib/telegram";
 import { recomputePostStatus } from "@/lib/post-status";
-import { decryptToken } from "@/lib/crypto";
 import { classifyTikTokError, TikTokPublishFailedError } from "@/lib/errors";
 import { fetchTikTokPublishStatus, type TikTokPublishStatus } from "@/lib/providers/tiktok";
 import { decideTikTokPendingDraft, tiktokReception } from "@/lib/tiktok-draft";
+import { freshTikTokAccessToken } from "@/lib/tiktok-token";
 import { afterTargetDelivered, composeCaption, markFailure } from "@/worker/publish-job";
 
 /**
@@ -27,7 +27,7 @@ async function followUpTikTokDraft(postTargetId: string): Promise<boolean> {
   let uploadedBytes: number | undefined;
   try {
     ({ status, failReason, uploadedBytes } = await fetchTikTokPublishStatus(
-      decryptToken(target.socialAccount.accessTokenEnc),
+      await freshTikTokAccessToken(target.socialAccount),
       target.tiktokPublishId
     ));
   } catch (err) {
