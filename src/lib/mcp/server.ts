@@ -11,6 +11,7 @@ import {
   unschedulePostForUser,
 } from "@/lib/post-service";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { appUrl } from "@/lib/app-url";
 
 /**
  * Serveur MCP du connecteur Claude (CLAUDE.md §29) — un serveur par requête (transport sans état),
@@ -19,12 +20,14 @@ import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
  * (anti-double publication, quotas TikTok, fenêtre ≥ 60 s…).
  */
 
-const INSTRUCTIONS = `Social Master planifie les publications Instagram, TikTok et YouTube Shorts de l'utilisateur.
+function instructions(app: string): string {
+  return `Social Master planifie les publications Instagram, TikTok et YouTube Shorts de l'utilisateur. Adresse de l'app : ${app} (seule adresse valide — ne pas en proposer d'autre).
 - Les heures sont TOUJOURS exprimées dans le fuseau de l'utilisateur (indiqué par get_overview), au format « AAAA-MM-JJTHH:mm » en entrée.
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
-- Les médias doivent déjà être dans la médiathèque (list_media) : ce connecteur ne peut pas importer un fichier depuis la conversation.
+- Les médias doivent déjà être dans la médiathèque (list_media) : ce connecteur ne peut pas importer un fichier depuis la conversation. Pour en ajouter, l'utilisateur les importe sur ${app}/library.
 - Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende) et attends sa confirmation.`;
+}
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -59,8 +62,9 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
   const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, timezone: true } });
   const tz = user?.timezone ?? "Europe/Paris";
   const fmt = (d: Date | null | undefined) => (d ? formatInTimeZone(d, tz, "yyyy-MM-dd HH:mm") : null);
+  const app = appUrl();
 
-  const server = new McpServer({ name: "social-master", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "social-master", version: "1.0.0" }, { instructions: instructions(app) });
 
   // ------------------------------------------------------------------ lecture
 
@@ -92,6 +96,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       ]);
       return ok({
         user: user?.email,
+        app_url: app,
+        library_url: `${app}/library`,
         timezone: tz,
         now: fmt(now),
         accounts: accounts.map((a) => ({
@@ -121,7 +127,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     "list_media",
     {
       title: "Lister la médiathèque",
-      description: "Médias disponibles (du plus récent au plus ancien) avec leur identifiant, à utiliser dans save_draft (media_ids).",
+      description:
+        "Médias disponibles (du plus récent au plus ancien) avec leur identifiant, à utiliser dans save_draft (media_ids). Pour en ajouter : page Médiathèque de l'app (library_url de get_overview).",
       inputSchema: {
         kind: z.enum(["all", "video", "image"]).default("all").describe("Filtrer par type de média"),
         limit: z.number().int().min(1).max(100).default(30),
