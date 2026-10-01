@@ -1,5 +1,5 @@
 import "server-only";
-import { getObjectStream } from "@/lib/storage";
+import { getObjectStream, headObject } from "@/lib/storage";
 import { appUrl } from "@/lib/app-url";
 import { TikTokPublishFailedError, TikTokStillProcessingError } from "@/lib/errors";
 
@@ -157,39 +157,44 @@ export async function fetchTikTokCreatorInfo(accessToken: string): Promise<TikTo
 
 // ---------------------------------------------------------------------------
 // Publication en mode brouillon (inbox) — FILE_UPLOAD par chunks depuis R2.
-// Voir CLAUDE.md §2 et §4. Limites vérifiées : chunks 5–64 Mo (dernier jusqu'à 128 Mo),
-// 1 à 1000 chunks, upload_url valide 1h.
+// Doc « Media Transfer Guide » (relue le 01/10/2026) : chunks de 5 à 64 MB, sauf le dernier qui absorbe
+// le reste (jusqu'à 128 MB) ; total_chunk_count = plancher(video_size / chunk_size) ; une vidéo de plus
+// de 64 MB DOIT partir en plusieurs chunks ; 1 à 1000 chunks ; upload_url valide 1 h. Chaque PUT porte
+// Content-Type, Content-Length et Content-Range ; réponse 206 = chunk reçu (d'autres attendus),
+// 201 = fichier complet, 400 = Content-Length faux.
 // ---------------------------------------------------------------------------
 
-const MAX_CHUNK_BYTES = 64 * 1024 * 1024;
+// La doc écrit « 64 MB » sans dire s'il s'agit de 64 000 000 ou de 64 × 1024 × 1024 octets (son exemple
+// compte en 10 000 000) : on retient la lecture la plus stricte, 64 000 000.
+const MAX_CHUNK_BYTES = 64_000_000;
+
+export type TikTokChunkPlan = { chunkSize: number; ranges: Array<{ start: number; end: number }> };
 
 /**
- * Découpe un fichier pour l'upload TikTok FILE_UPLOAD.
+ * Découpage d'une vidéo pour l'upload FILE_UPLOAD, au modèle exact de la doc TikTok :
+ * - ≤ 64 Mo : un seul chunk, `chunk_size` = taille du fichier (obligatoire sous 5 Mo) ;
+ * - > 64 Mo : AU MOINS 2 chunks — `chunk_size` = min(64 Mo, moitié du fichier) et
+ *   `total_chunk_count` = plancher(taille / chunk_size) ; les premiers chunks font exactement
+ *   `chunk_size`, le dernier absorbe le reste (toujours < 128 Mo).
  *
- * ⚠️ TikTok impose un modèle STRICT (vérifié empiriquement le 09/07/2026 : tout écart → `invalid_param`
- * « TikTok a refusé les paramètres ») : `chunk_size` ∈ [5 Mo, 64 Mo] et surtout
- * **`total_chunk_count = plancher(video_size / chunk_size)`**. Les (count − 1) premiers chunks font
- * EXACTEMENT `chunk_size` (64 Mo ici) ; le DERNIER absorbe tout le reste — il pèse donc entre 64 Mo et
- * < 128 Mo (jamais un petit reliquat séparé). Un fichier ≤ 64 Mo tient en un seul chunk = sa taille.
- *
- * Le nombre de segments retournés est exactement ce `total_chunk_count`. NE PAS revenir à un découpage
- * « naïf » (64 Mo + reste) : pour un fichier de 100 Mo il produirait 2 chunks alors que TikTok en attend
- * 1 (plancher(100/64)=1), ce qui faisait échouer toutes les vidéos > 64 Mo dont la taille ne tombait pas
- * pile sur un multiple.
+ * Historique (ne pas revenir en arrière) : le 09/07/2026, « 64 Mo + reste » annonçait 2 chunks là où
+ * plancher() en donnait 1 → `invalid_param` ; le 01/10/2026, un fichier de 106 Mo envoyé en UN seul
+ * chunk (chunk_size 64 Mio) → `invalid_param` aussi.
  */
-export function computeChunkRanges(totalSize: number): Array<{ start: number; end: number }> {
+export function planTikTokChunks(totalSize: number): TikTokChunkPlan {
   if (totalSize <= MAX_CHUNK_BYTES) {
-    return [{ start: 0, end: totalSize - 1 }];
+    return { chunkSize: totalSize, ranges: [{ start: 0, end: totalSize - 1 }] };
   }
 
-  const count = Math.floor(totalSize / MAX_CHUNK_BYTES);
+  const chunkSize = Math.min(MAX_CHUNK_BYTES, Math.floor(totalSize / 2));
+  const count = Math.floor(totalSize / chunkSize);
   const ranges: Array<{ start: number; end: number }> = [];
   for (let i = 0; i < count - 1; i++) {
-    ranges.push({ start: i * MAX_CHUNK_BYTES, end: (i + 1) * MAX_CHUNK_BYTES - 1 });
+    ranges.push({ start: i * chunkSize, end: (i + 1) * chunkSize - 1 });
   }
   // Dernier chunk : du début de son segment jusqu'à la fin du fichier (absorbe le reste).
-  ranges.push({ start: (count - 1) * MAX_CHUNK_BYTES, end: totalSize - 1 });
-  return ranges;
+  ranges.push({ start: (count - 1) * chunkSize, end: totalSize - 1 });
+  return { chunkSize, ranges };
 }
 
 type InboxInitResponse = { publish_id: string; upload_url: string };
@@ -226,28 +231,53 @@ async function initInboxVideoUpload(
   return json.data as InboxInitResponse;
 }
 
-/** Transfère le fichier depuis R2 vers TikTok par chunks, sans jamais bufferiser l'intégralité en RAM. */
-async function uploadVideoToTikTok(uploadUrl: string, storageKey: string, totalSize: number): Promise<void> {
-  const ranges = computeChunkRanges(totalSize);
+const TIKTOK_VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 
-  for (const range of ranges) {
+/**
+ * Transfère le fichier depuis R2 vers TikTok, chunk par chunk, sans jamais le bufferiser en RAM.
+ * `Content-Length` est obligatoire (doc) : sans lui, le corps partait en « chunked » — le 01/10/2026,
+ * TikTok a livré un brouillon dont la fin était abîmée. Avec lui, undici refuse d'envoyer un corps d'une
+ * autre taille : jamais de vidéo tronquée en silence.
+ */
+async function uploadVideoToTikTok(
+  uploadUrl: string,
+  storageKey: string,
+  totalSize: number,
+  plan: TikTokChunkPlan,
+  mimeType: string
+): Promise<void> {
+  const contentType = TIKTOK_VIDEO_TYPES.has(mimeType) ? mimeType : "video/mp4";
+
+  for (const [index, range] of plan.ranges.entries()) {
+    const length = range.end - range.start + 1;
     const object = await getObjectStream(storageKey, `bytes=${range.start}-${range.end}`);
     if (!object.Body) throw new Error("Lecture du fichier R2 impossible pour l'upload TikTok.");
+    if (object.ContentLength !== undefined && object.ContentLength !== length) {
+      throw new Error(
+        `Lecture R2 incomplète pour l'upload TikTok (${object.ContentLength} octets au lieu de ${length}).`
+      );
+    }
 
     const res = await fetch(uploadUrl, {
       method: "PUT",
       headers: {
-        "Content-Type": "video/mp4",
+        "Content-Type": contentType,
+        "Content-Length": String(length),
         "Content-Range": `bytes ${range.start}-${range.end}/${totalSize}`,
       },
       // @ts-expect-error -- duplex requis par Node/undici pour un body en streaming, absent des types DOM actuels
       duplex: "half",
       body: object.Body.transformToWebStream(),
     });
+    const text = await res.text().catch(() => "");
 
     if (!res.ok) {
-      const text = await res.text();
       throw new Error(`Envoi du chunk TikTok échoué (${res.status}): ${text}`);
+    }
+    // 206 = TikTok attend encore des octets : après le DERNIER chunk, il ne détient donc pas la vidéo
+    // complète. On s'arrête là (publish_id non persisté → un retry repart d'un envoi neuf).
+    if (index === plan.ranges.length - 1 && res.status === 206) {
+      throw new Error(`TikTok n'a pas reçu la vidéo complète (206 après le dernier chunk) : ${text}`);
     }
   }
 }
@@ -259,11 +289,19 @@ export type TikTokPublishStatus =
   | "PUBLISH_COMPLETE"
   | "FAILED";
 
+export type TikTokPublishState = {
+  status: TikTokPublishStatus | null;
+  failReason?: string;
+  /** Octets reçus par TikTok pour un FILE_UPLOAD (`uploaded_bytes`) — contrôle d'intégrité de l'envoi. */
+  uploadedBytes?: number;
+};
+
 /** Statut d'un envoi TikTok (doc « Get Post Status »). `status` vaut null si TikTok n'en renvoie aucun. */
 export async function fetchTikTokPublishStatus(
   accessToken: string,
-  publishId: string
-): Promise<{ status: TikTokPublishStatus | null; failReason?: string }> {
+  publishId: string,
+  signal?: AbortSignal
+): Promise<TikTokPublishState> {
   const res = await fetch(STATUS_FETCH_URL, {
     method: "POST",
     headers: {
@@ -271,6 +309,7 @@ export async function fetchTikTokPublishStatus(
       "Content-Type": "application/json; charset=UTF-8",
     },
     body: JSON.stringify({ publish_id: publishId }),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -280,26 +319,34 @@ export async function fetchTikTokPublishStatus(
   if (json.error?.code && json.error.code !== "ok") {
     throw new Error(`Lecture du statut TikTok refusée : ${json.error.code} — ${json.error.message}`);
   }
-  return { status: json.data?.status ?? null, failReason: json.data?.fail_reason };
+  const uploaded = json.data?.uploaded_bytes;
+  return {
+    status: json.data?.status ?? null,
+    failReason: json.data?.fail_reason,
+    uploadedBytes: typeof uploaded === "number" && uploaded > 0 ? uploaded : undefined,
+  };
 }
 
 /**
  * Démarre un brouillon vidéo TikTok (inbox) : init → upload par chunks. Retourne le `publish_id` une
  * fois le fichier ENTIÈREMENT transmis — c'est à partir de là que TikTok peut livrer le brouillon, et
  * donc qu'un renvoi créerait un doublon. Aucune caption possible (saisie dans l'app TikTok).
+ * La taille qui fait foi est celle de l'objet R2 (HEAD), pas seulement celle notée en base : annoncer
+ * moins d'octets que le fichier n'en contient enverrait une vidéo tronquée.
  */
 export async function startTikTokDraftVideo(
   accessToken: string,
   storageKey: string,
-  videoSizeBytes: number
+  videoSizeBytes: number,
+  mimeType = "video/mp4"
 ): Promise<string> {
-  const ranges = computeChunkRanges(videoSizeBytes);
-  // chunk_size déclaré : la taille du fichier s'il tient en un chunk (≤ 64 Mo), sinon 64 Mo — JAMAIS
-  // la taille réelle d'un gros fichier mono-chunk (ex. 100 Mo), qui dépasserait le plafond de 64 Mo.
-  const chunkSize = videoSizeBytes <= MAX_CHUNK_BYTES ? videoSizeBytes : MAX_CHUNK_BYTES;
+  const head = await headObject(storageKey);
+  if (head.outcome === "not_found") throw new Error("Vidéo introuvable sur le stockage pour l'upload TikTok.");
+  const totalSize = head.outcome === "found" && head.sizeBytes > 0 ? head.sizeBytes : videoSizeBytes;
 
-  const { publish_id, upload_url } = await initInboxVideoUpload(accessToken, videoSizeBytes, chunkSize, ranges.length);
-  await uploadVideoToTikTok(upload_url, storageKey, videoSizeBytes);
+  const plan = planTikTokChunks(totalSize);
+  const { publish_id, upload_url } = await initInboxVideoUpload(accessToken, totalSize, plan.chunkSize, plan.ranges.length);
+  await uploadVideoToTikTok(upload_url, storageKey, totalSize, plan, mimeType);
   return publish_id;
 }
 
@@ -316,15 +363,15 @@ export async function waitForTikTokInbox(
   publishId: string,
   pollIntervalMs = 3000,
   maxWaitMs = 5 * 60 * 1000
-): Promise<void> {
+): Promise<{ uploadedBytes?: number }> {
   const start = Date.now();
   for (;;) {
     if (Date.now() - start > maxWaitMs) {
       throw new TikTokStillProcessingError(publishId);
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    const { status, failReason } = await fetchTikTokPublishStatus(accessToken, publishId);
-    if (status === "SEND_TO_USER_INBOX" || status === "PUBLISH_COMPLETE") return;
+    const { status, failReason, uploadedBytes } = await fetchTikTokPublishStatus(accessToken, publishId);
+    if (status === "SEND_TO_USER_INBOX" || status === "PUBLISH_COMPLETE") return { uploadedBytes };
     if (status === "FAILED") {
       throw new TikTokPublishFailedError(failReason ?? "raison inconnue");
     }

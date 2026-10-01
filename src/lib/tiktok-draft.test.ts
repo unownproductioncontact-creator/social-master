@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { deliverTikTokDraft, decideTikTokPendingDraft, TIKTOK_CONFIRMATION_MAX_AGE_MS } from "@/lib/tiktok-draft";
+import { deliverTikTokDraft, decideTikTokPendingDraft, tiktokReception, TIKTOK_CONFIRMATION_MAX_AGE_MS } from "@/lib/tiktok-draft";
 import { TikTokPublishFailedError, TikTokStillProcessingError } from "@/lib/errors";
 
 function deps(existingPublishId: string | null, waitForInbox: (id: string) => Promise<void> = async () => {}) {
@@ -85,5 +85,20 @@ describe("decideTikTokPendingDraft", () => {
       decideTikTokPendingDraft({ status: "PROCESSING_UPLOAD", uploadedAt, now: new Date(uploadedAt.getTime() + TIKTOK_CONFIRMATION_MAX_AGE_MS + 1) })
     ).toBe("expired");
     expect(decideTikTokPendingDraft({ status: null, uploadedAt, now: minutesLater(121) })).toBe("expired");
+  });
+});
+
+describe("tiktokReception", () => {
+  it("fichier entièrement reçu par TikTok", () => {
+    expect(tiktokReception(54_060_311, 54_060_311)).toEqual({ received_bytes: 54_060_311, expected_bytes: 54_060_311, complete: true });
+  });
+
+  it("envoi tronqué → complete: false", () => {
+    expect(tiktokReception(40_000_000, 54_060_311).complete).toBe(false);
+  });
+
+  it("TikTok n'indique rien ou taille inconnue → on ne conclut pas", () => {
+    expect(tiktokReception(undefined, 54_060_311).complete).toBeNull();
+    expect(tiktokReception(54_060_311, undefined)).toEqual({ received_bytes: 54_060_311, expected_bytes: null, complete: null });
   });
 });

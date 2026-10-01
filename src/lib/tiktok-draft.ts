@@ -60,3 +60,23 @@ export function decideTikTokPendingDraft(input: {
   const maxAgeMs = input.maxAgeMs ?? TIKTOK_CONFIRMATION_MAX_AGE_MS;
   return input.now.getTime() - input.uploadedAt.getTime() > maxAgeMs ? "expired" : "wait";
 }
+
+export type TikTokReception = {
+  received_bytes: number | null;
+  expected_bytes: number | null;
+  /** null = impossible à dire (TikTok n'a pas donné `uploaded_bytes`, ou taille du fichier inconnue). */
+  complete: boolean | null;
+};
+
+/**
+ * Contrôle d'intégrité d'un envoi vidéo (incident du 01/10/2026 : brouillon livré avec une fin abîmée) :
+ * octets reçus selon TikTok (`uploaded_bytes` du statut) comparés à la taille du fichier envoyé.
+ * Journalisé à la livraison et affiché par le connecteur Claude (get_post).
+ */
+export function tiktokReception(receivedBytes: number | undefined, expectedBytes: number | undefined): TikTokReception {
+  return {
+    received_bytes: receivedBytes ?? null,
+    expected_bytes: expectedBytes ?? null,
+    complete: receivedBytes !== undefined && expectedBytes !== undefined ? receivedBytes >= expectedBytes : null,
+  };
+}

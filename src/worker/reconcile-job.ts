@@ -6,7 +6,7 @@ import { recomputePostStatus } from "@/lib/post-status";
 import { decryptToken } from "@/lib/crypto";
 import { classifyTikTokError, TikTokPublishFailedError } from "@/lib/errors";
 import { fetchTikTokPublishStatus, type TikTokPublishStatus } from "@/lib/providers/tiktok";
-import { decideTikTokPendingDraft } from "@/lib/tiktok-draft";
+import { decideTikTokPendingDraft, tiktokReception } from "@/lib/tiktok-draft";
 import { afterTargetDelivered, composeCaption, markFailure } from "@/worker/publish-job";
 
 /**
@@ -18,14 +18,15 @@ import { afterTargetDelivered, composeCaption, markFailure } from "@/worker/publ
 async function followUpTikTokDraft(postTargetId: string): Promise<boolean> {
   const target = await db.postTarget.findUnique({
     where: { id: postTargetId },
-    include: { post: true, socialAccount: true },
+    include: { post: { include: { postMedia: { include: { mediaAsset: true } } } }, socialAccount: true },
   });
   if (!target || target.status !== "PROCESSING" || !target.tiktokPublishId) return false;
 
   let status: TikTokPublishStatus | null = null;
   let failReason: string | undefined;
+  let uploadedBytes: number | undefined;
   try {
-    ({ status, failReason } = await fetchTikTokPublishStatus(
+    ({ status, failReason, uploadedBytes } = await fetchTikTokPublishStatus(
       decryptToken(target.socialAccount.accessTokenEnc),
       target.tiktokPublishId
     ));
@@ -48,7 +49,15 @@ async function followUpTikTokDraft(postTargetId: string): Promise<boolean> {
       data: { status: "SENT_TO_INBOX", publishedAt: new Date(), errorCode: null, errorMessage: null },
     });
     if (job) await db.publishJob.update({ where: { id: job.id }, data: { state: "COMPLETED" } });
-    await afterTargetDelivered(target, composeCaption(target));
+    const video =
+      target.contentType === "TIKTOK_VIDEO"
+        ? target.post.postMedia.slice().sort((a, b) => a.position - b.position)[0]?.mediaAsset
+        : undefined;
+    await afterTargetDelivered(
+      target,
+      composeCaption(target),
+      video ? { tiktokReception: tiktokReception(uploadedBytes, video.sizeBytes) } : {}
+    );
     return true;
   }
 

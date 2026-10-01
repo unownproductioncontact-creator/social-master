@@ -9,7 +9,7 @@ import { recomputePostStatus } from "@/lib/post-status";
 import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
 import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from "@/lib/providers/tiktok";
-import { deliverTikTokDraft } from "@/lib/tiktok-draft";
+import { deliverTikTokDraft, tiktokReception, type TikTokReception } from "@/lib/tiktok-draft";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
@@ -34,7 +34,8 @@ export function composeCaption(target: {
  */
 export async function afterTargetDelivered(
   target: { id: string; platform: string; postId: string; post: { userId: string } },
-  caption: string
+  caption: string,
+  extraDetail: { tiktokReception?: TikTokReception } = {}
 ): Promise<void> {
   // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
   // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
@@ -54,7 +55,7 @@ export async function afterTargetDelivered(
       entityType: "PostTarget",
       entityId: target.id,
       action: `${target.platform.toLowerCase()}_published`,
-      detail: { postId: target.postId },
+      detail: { postId: target.postId, ...extraDetail },
     },
   });
   const resolvedStatus = await recomputePostStatus(target.postId);
@@ -199,25 +200,37 @@ async function processTarget(postTargetId: string): Promise<void> {
     // TikTok (vidéo ou photo) : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas
     // auditée. Un retry ne renvoie JAMAIS un média que TikTok détient déjà (publish_id persisté) : il
     // reprend seulement l'attente de livraison (CLAUDE.md §27, doublons du 30/09/2026).
+    const isVideo = target.contentType !== "TIKTOK_PHOTO";
+    let receivedBytes: number | undefined;
     await deliverTikTokDraft({
       existingPublishId: target.tiktokPublishId,
       start: () =>
-        target.contentType === "TIKTOK_PHOTO"
-          ? startTikTokDraftPhoto(accessToken, orderedMedia.map((m) => getPublicMediaUrl(m.storageKey)))
-          : startTikTokDraftVideo(accessToken, orderedMedia[0].storageKey, orderedMedia[0].sizeBytes),
+        isVideo
+          ? startTikTokDraftVideo(accessToken, orderedMedia[0].storageKey, orderedMedia[0].sizeBytes, orderedMedia[0].mimeType)
+          : startTikTokDraftPhoto(accessToken, orderedMedia.map((m) => getPublicMediaUrl(m.storageKey))),
       savePublishId: async (publishId) => {
         await db.postTarget.update({
           where: { id: postTargetId },
           data: { tiktokPublishId: publishId, tiktokUploadedAt: publishId ? new Date() : null },
         });
       },
-      waitForInbox: (publishId) => waitForTikTokInbox(accessToken, publishId),
+      waitForInbox: async (publishId) => {
+        ({ uploadedBytes: receivedBytes } = await waitForTikTokInbox(accessToken, publishId));
+      },
     });
 
     await db.postTarget.update({
       where: { id: postTargetId },
       data: { status: "SENT_TO_INBOX", publishedAt: new Date(), errorCode: null, errorMessage: null },
     });
+    if (isVideo) {
+      const reception = tiktokReception(receivedBytes, orderedMedia[0].sizeBytes);
+      if (reception.complete === false) {
+        console.error(`[publish-job] TikTok n'a reçu que ${receivedBytes}/${orderedMedia[0].sizeBytes} octets (target ${postTargetId})`);
+      }
+      await afterTargetDelivered(target, caption, { tiktokReception: reception });
+      return;
+    }
   }
 
   await afterTargetDelivered(target, caption);

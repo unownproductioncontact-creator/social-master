@@ -15,6 +15,9 @@ import { appUrl } from "@/lib/app-url";
 import { buildStorageKey } from "@/lib/storage";
 import { resolveShareLink } from "@/lib/media-import/share-link";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { decryptToken } from "@/lib/crypto";
+import { fetchTikTokPublishStatus } from "@/lib/providers/tiktok";
+import { tiktokReception } from "@/lib/tiktok-draft";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -41,6 +44,23 @@ function ok(data: unknown): ToolResult {
 
 function fail(message: string): ToolResult {
   return { content: [{ type: "text", text: `Erreur : ${message}` }], isError: true };
+}
+
+/**
+ * Ce que TikTok a réellement reçu pour un envoi (statut + octets reçus vs taille du fichier), lu EN DIRECT
+ * — pour vérifier qu'un brouillon est arrivé entier. Jamais bloquant : erreur lisible si TikTok ne répond pas.
+ */
+async function readTikTokReception(accessTokenEnc: string, publishId: string, expectedBytes: number | undefined) {
+  try {
+    const state = await fetchTikTokPublishStatus(decryptToken(accessTokenEnc), publishId, AbortSignal.timeout(5000));
+    return {
+      tiktok_status: state.status,
+      ...tiktokReception(state.uploadedBytes, expectedBytes),
+      fail_reason: state.failReason,
+    };
+  } catch {
+    return { error: "Statut TikTok illisible pour l'instant (jeton expiré ou TikTok injoignable)." };
+  }
 }
 
 /** Nom lisible d'un média : dernier segment de la clé R2 sans le préfixe UUID (« uuid-nom.mp4 »). */
@@ -210,16 +230,35 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     "get_post",
     {
       title: "Détail d'une publication",
-      description: "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien).",
+      description:
+        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes).",
       inputSchema: { post_id: z.string().min(1) },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ post_id }) => {
       const post = await db.post.findFirst({
         where: { id: post_id, userId },
-        include: { postMedia: { include: { mediaAsset: true }, orderBy: { position: "asc" } }, postTargets: true },
+        include: {
+          postMedia: { include: { mediaAsset: true }, orderBy: { position: "asc" } },
+          postTargets: { include: { socialAccount: true } },
+        },
       });
       if (!post) return fail("Post introuvable.");
+      const video = post.postMedia.find((pm) => pm.mediaAsset.mimeType.startsWith("video/"))?.mediaAsset;
+      const receptions = new Map(
+        await Promise.all(
+          post.postTargets
+            .filter((t) => t.platform === "TIKTOK" && t.tiktokPublishId)
+            .map(async (t) => [
+              t.id,
+              await readTikTokReception(
+                t.socialAccount.accessTokenEnc,
+                t.tiktokPublishId!,
+                t.contentType === "TIKTOK_VIDEO" ? video?.sizeBytes : undefined
+              ),
+            ] as const)
+        )
+      );
       return ok({
         post_id: post.id,
         status: post.status,
@@ -242,6 +281,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           error: t.errorMessage ?? undefined,
           youtube_title: t.platform === "YOUTUBE" ? (t.platformOptions as { title?: string } | null)?.title : undefined,
           instagram_collaborators: t.platform === "INSTAGRAM" ? collaboratorsFromOptions(t.platformOptions) : undefined,
+          tiktok_reception: receptions.get(t.id),
         })),
         created_at: fmt(post.createdAt),
         updated_at: fmt(post.updatedAt),
