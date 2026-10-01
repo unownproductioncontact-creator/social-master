@@ -12,6 +12,10 @@ import {
 } from "@/lib/post-service";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { appUrl } from "@/lib/app-url";
+import { buildStorageKey } from "@/lib/storage";
+import { resolveShareLink } from "@/lib/media-import/share-link";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
  * Serveur MCP du connecteur Claude (CLAUDE.md §29) — un serveur par requête (transport sans état),
@@ -25,7 +29,7 @@ function instructions(app: string): string {
 - Les heures sont TOUJOURS exprimées dans le fuseau de l'utilisateur (indiqué par get_overview), au format « AAAA-MM-JJTHH:mm » en entrée.
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
-- Les médias doivent déjà être dans la médiathèque (list_media) : ce connecteur ne peut pas importer un fichier depuis la conversation. Pour en ajouter, l'utilisateur les importe sur ${app}/library.
+- Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende) et attends sa confirmation.`;
 }
 
@@ -245,7 +249,75 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     }
   );
 
+  server.registerTool(
+    "get_media",
+    {
+      title: "État d'un média",
+      description: "Statut d'un média (importing, ready, failed + raison) et ses caractéristiques — pour suivre un import_media_from_url.",
+      inputSchema: { media_id: z.string().min(1) },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ media_id }) => {
+      const m = await db.mediaAsset.findFirst({ where: { id: media_id, userId } });
+      if (!m) return fail("Média introuvable.");
+      const status = m.status === "READY" ? "ready" : m.status === "FAILED" ? "failed" : "importing";
+      return ok({
+        media_id: m.id,
+        status,
+        error: m.importError ?? undefined,
+        name: status === "ready" ? mediaName(m.storageKey) : undefined,
+        kind: status === "ready" ? (m.mimeType.startsWith("video/") ? "video" : "image") : undefined,
+        size_mb: status === "ready" ? Math.round((m.sizeBytes / (1024 * 1024)) * 10) / 10 : undefined,
+        duration_s: m.durationSec ?? undefined,
+        width: m.width ?? undefined,
+        height: m.height ?? undefined,
+      });
+    }
+  );
+
   // ------------------------------------------------------------------ actions
+
+  server.registerTool(
+    "import_media_from_url",
+    {
+      title: "Importer un média depuis un lien",
+      description:
+        "Ajoute à la médiathèque une vidéo ou une image depuis un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien https direct). L'import tourne en arrière-plan : suivre avec get_media jusqu'à status = ready, puis utiliser le media_id dans save_draft. Formats : MP4, MOV, WebM, JPEG, PNG, WebP ; 2 Go max.",
+      inputSchema: {
+        url: z.string().url().describe("Lien de partage public du FICHIER (pas d'un dossier)"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ url }) => {
+      const link = resolveShareLink(url);
+      if (!link.ok) return fail(link.error);
+      if (!checkRateLimit(`mcp-import:${userId}`, { max: 20, windowMs: 60 * 60 * 1000 }).allowed) {
+        return fail("Trop d'imports en une heure, réessayez plus tard.");
+      }
+      const boss = getBoss();
+      const asset = await db.$transaction(async (tx) => {
+        const created = await tx.mediaAsset.create({
+          data: {
+            userId,
+            storageKey: buildStorageKey(userId, "import-en-cours"),
+            mimeType: "application/octet-stream",
+            sizeBytes: 0,
+            status: "UPLOADING",
+            importUrl: url,
+          },
+        });
+        // Enqueue transactionnel (règle d'ingénierie n°2) : pas de média « en cours » sans job réel.
+        await boss.send(MEDIA_IMPORT_QUEUE, { mediaAssetId: created.id }, { db: dbFromPrismaTx(tx) });
+        return created;
+      });
+      return ok({
+        media_id: asset.id,
+        status: "importing",
+        source: link.provider,
+        next: "Appeler get_media dans ~20 s (gros fichier : plusieurs minutes) jusqu'à status = ready.",
+      });
+    }
+  );
 
   server.registerTool(
     "save_draft",

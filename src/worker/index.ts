@@ -1,4 +1,5 @@
 import "server-only";
+import type { JobWithMetadata } from "pg-boss";
 import {
   getBoss,
   PUBLISH_QUEUE,
@@ -6,12 +7,14 @@ import {
   TOKEN_REFRESH_QUEUE,
   STORAGE_CHECK_QUEUE,
   MEDIA_CLEANUP_QUEUE,
+  MEDIA_IMPORT_QUEUE,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
 import { runTokenRefresh } from "@/worker/token-refresh-job";
 import { runStorageCheck } from "@/worker/storage-check-job";
 import { runMediaCleanup } from "@/worker/media-cleanup-job";
+import { runMediaImport } from "@/worker/media-import-job";
 
 let started = false;
 
@@ -41,6 +44,10 @@ export async function startWorker(): Promise<void> {
   await boss.createQueue(MEDIA_CLEANUP_QUEUE, { retryLimit: 1 });
   await boss.schedule(MEDIA_CLEANUP_QUEUE, "0 6 * * *", {}, { tz: "UTC" }); // tous les jours à 6h UTC
 
+  // Import de médias par lien (connecteur Claude, CLAUDE.md §30) : 1 nouvelle tentative sur erreur
+  // réseau, délai max 30 min (gros fichiers).
+  await boss.createQueue(MEDIA_IMPORT_QUEUE, { retryLimit: 1, retryDelay: 30, expireInSeconds: 1800 });
+
   await boss.work(
     PUBLISH_QUEUE,
     { batchSize: 1, includeMetadata: true, perJobResults: true },
@@ -63,7 +70,15 @@ export async function startWorker(): Promise<void> {
     await runMediaCleanup();
   });
 
+  await boss.work(
+    MEDIA_IMPORT_QUEUE,
+    { batchSize: 1, includeMetadata: true },
+    async ([job]: JobWithMetadata<{ mediaAssetId: string }>[]) => {
+      await runMediaImport(job.data.mediaAssetId, job.retryCount >= job.retryLimit);
+    }
+  );
+
   console.log(
-    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup)"
+    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, media-import)"
   );
 }

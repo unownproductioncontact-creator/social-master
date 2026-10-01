@@ -8,6 +8,8 @@ import {
   NotFound,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Upload } from "@aws-sdk/lib-storage";
+import type { Readable } from "node:stream";
 import { appUrl } from "@/lib/app-url";
 
 function getClient(): S3Client {
@@ -62,6 +64,27 @@ export async function getObjectBuffer(key: string): Promise<Buffer> {
   if (!object.Body) throw new Error(`Objet R2 introuvable : ${key}`);
   const bytes = await object.Body.transformToByteArray();
   return Buffer.from(bytes);
+}
+
+/**
+ * Envoie un flux de taille inconnue vers R2 en multipart (lib-storage) : mémoire bornée à
+ * partSize × queueSize (16 Mo), jamais le fichier entier en RAM (règle d'ingénierie n°7).
+ */
+export async function uploadStream(key: string, body: Readable, contentType: string): Promise<void> {
+  const upload = new Upload({
+    client: getClient(),
+    params: { Bucket: getBucket(), Key: key, Body: body, ContentType: contentType },
+    partSize: 8 * 1024 * 1024,
+    queueSize: 2,
+  });
+  await upload.done();
+}
+
+/** Lit les octets [start, endInclusive] d'un objet R2 (lecture partielle des en-têtes MP4). */
+export async function readObjectRange(key: string, start: number, endInclusive: number): Promise<Uint8Array> {
+  const object = await getObjectStream(key, `bytes=${start}-${endInclusive}`);
+  if (!object.Body) throw new Error(`Objet R2 introuvable : ${key}`);
+  return object.Body.transformToByteArray();
 }
 
 export async function putObjectBuffer(key: string, body: Buffer, contentType: string): Promise<void> {

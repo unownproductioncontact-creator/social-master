@@ -133,6 +133,9 @@ model MediaAsset {
   thumbnailKey String?
   status       MediaStatus @default(UPLOADING)
   checksum     String?
+  // Import par lien (connecteur Claude, CLAUDE.md §30) : lien d'origine + erreur lisible si l'import échoue.
+  importUrl    String?
+  importError  String?
   createdAt    DateTime    @default(now())
 
   postMedia PostMedia[]
