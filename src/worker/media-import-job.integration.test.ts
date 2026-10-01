@@ -30,7 +30,7 @@ const { runMediaImport } = await import("@/worker/media-import-job");
 
 const TEST_EMAIL = "vitest-media-import@test.local";
 let userId: string;
-let fixture: Uint8Array;
+let fixture: Uint8Array<ArrayBuffer>;
 
 async function importAsset(url: string): Promise<string> {
   const asset = await db.mediaAsset.create({

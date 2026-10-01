@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { bearerToken, mcpResourceUrl } from "@/lib/mcp/oauth-core";
-import { authenticateAccessToken } from "@/lib/mcp/oauth-store";
+import { mcpResourceUrl } from "@/lib/mcp/oauth-core";
+import { authenticateBearer, unauthorized } from "@/lib/mcp/bearer";
 import { buildMcpServer } from "@/lib/mcp/server";
 import { CORS_HEADERS, issuer, jsonResponse, preflight } from "@/lib/mcp/http";
 
@@ -12,20 +12,15 @@ export const dynamic = "force-dynamic";
  * métadonnées de ressource protégée (RFC 9728), ce qui déclenche la connexion OAuth côté Claude.
  */
 export async function POST(req: Request): Promise<Response> {
-  const token = bearerToken(req.headers.get("authorization"));
-  const auth = token ? await authenticateAccessToken(token) : null;
-  if (!token || !auth) {
-    return jsonResponse({ error: "invalid_token", error_description: "Jeton d'accès manquant, expiré ou révoqué." }, 401, {
-      "WWW-Authenticate": `Bearer resource_metadata="${issuer()}/.well-known/oauth-protected-resource"`,
-    });
-  }
+  const auth = await authenticateBearer(req);
+  if (!auth) return unauthorized();
 
   const server = await buildMcpServer(auth.userId);
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   const response = await transport.handleRequest(req, {
     authInfo: {
-      token,
+      token: auth.token,
       clientId: auth.clientId,
       scopes: [auth.scope],
       expiresAt: Math.floor(auth.expiresAt.getTime() / 1000),

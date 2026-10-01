@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { verifySession } from "@/lib/dal";
+import { db } from "@/lib/db";
 import { buildRedirect } from "@/lib/mcp/oauth-core";
 import { createAuthorizationCode, revokeGrant } from "@/lib/mcp/oauth-store";
 import { authorizeParamsFromForm, validateAuthorizeRequest } from "@/lib/mcp/authorize-request";
@@ -10,6 +11,7 @@ import { authorizeParamsFromForm, validateAuthorizeRequest } from "@/lib/mcp/aut
 /** « Autoriser » sur la page de consentement : émet un code pour l'utilisateur CONNECTÉ, puis retour au client. */
 export async function approveMcpAuthorization(formData: FormData): Promise<void> {
   const session = await verifySession();
+  if (!(await db.user.findUnique({ where: { id: session.userId }, select: { id: true } }))) redirect("/login");
   const v = await validateAuthorizeRequest(authorizeParamsFromForm(formData));
   if (!v.ok) {
     if ("fatal" in v) redirect("/dashboard");

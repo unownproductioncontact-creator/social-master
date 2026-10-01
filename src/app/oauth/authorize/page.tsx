@@ -6,6 +6,7 @@ import { getCurrentUser } from "@/lib/dal";
 import { buildRedirect } from "@/lib/mcp/oauth-core";
 import { validateAuthorizeRequest, type AuthorizeParams } from "@/lib/mcp/authorize-request";
 import { approveMcpAuthorization, denyMcpAuthorization } from "@/lib/actions/mcp-oauth";
+import { logout } from "@/lib/actions/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,24 @@ export default async function AuthorizePage({ searchParams }: { searchParams: Pr
       <BrandMark />
       <div className="w-full max-w-[440px]">
         <Card>
-          {!v.ok ? (
+          {!user ? (
+            // Session valide mais compte introuvable (ex. compte supprimé) : émettre un code échouerait.
+            <>
+              <CardHeader>
+                <CardTitle className="text-[19px] tracking-[-0.015em]">Session expirée</CardTitle>
+                <CardDescription className="text-[13px]">
+                  Reconnectez-vous à Social Master, puis relancez la connexion depuis Claude.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form action={logout}>
+                  <Button type="submit" className="w-full">
+                    Se reconnecter
+                  </Button>
+                </form>
+              </CardContent>
+            </>
+          ) : !v.ok ? (
             <>
               <CardHeader>
                 <CardTitle className="text-[19px] tracking-[-0.015em]">Autorisation impossible</CardTitle>

@@ -2,13 +2,15 @@ import "server-only";
 import { lookup } from "node:dns/promises";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
-import sharp from "sharp";
 import { db } from "@/lib/db";
-import { buildStorageKey, deleteObject, getObjectBuffer, readObjectRange, uploadStream } from "@/lib/storage";
+import { buildStorageKey, deleteObject, uploadStream } from "@/lib/storage";
 import { resolveShareLink } from "@/lib/media-import/share-link";
 import { isPublicIp } from "@/lib/media-import/network-guard";
 import { fileNameFromContentDisposition, finalFileName, looksLikeHtml, sniffMediaType } from "@/lib/media-import/sniff";
-import { parseVideoMeta } from "@/lib/media-import/mp4-meta";
+import { describeStoredMedia } from "@/lib/media-import/describe";
+import { MediaImportError } from "@/lib/media-import/errors";
+
+export { MediaImportError };
 
 /**
  * Import d'un média depuis un lien (Google Drive, Dropbox, lien direct) — CLAUDE.md §30. Lancé par
@@ -17,15 +19,11 @@ import { parseVideoMeta } from "@/lib/media-import/mp4-meta";
  * R2). Flux de bout en bout, jamais le fichier entier en RAM (règle n°7).
  */
 
-/** Erreur définitive à montrer telle quelle à l'utilisateur (aucune nouvelle tentative). */
-export class MediaImportError extends Error {}
-
 // `sizeBytes` est un Int Postgres (≤ 2 147 483 647) : plafond sous 2 Go.
 const MAX_IMPORT_BYTES = 2_000_000_000;
 const USER_STORAGE_CAP_BYTES = 9 * 1024 ** 3; // même plafond que l'upload navigateur (presign)
 const MAX_REDIRECTS = 5;
 const DOWNLOAD_TIMEOUT_MS = 20 * 60 * 1000;
-const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 
 async function assertPublicHost(hostname: string): Promise<void> {
   let addresses: Array<{ address: string }>;
@@ -165,26 +163,14 @@ export async function runMediaImport(mediaAssetId: string, isLastAttempt: boolea
     uploadedKey = storageKey;
     await uploadStream(storageKey, Readable.fromWeb(counted as unknown as NodeWebReadableStream<Uint8Array>), mime);
 
-    let meta: { width: number | null; height: number | null; durationSec: number | null } = { width: null, height: null, durationSec: null };
-    if (mime === "video/mp4" || mime === "video/quicktime") {
-      meta = await parseVideoMeta({
-        size: total,
-        read: (offset, length) => readObjectRange(storageKey, offset, Math.min(offset + length, total) - 1),
-      }).catch(() => meta);
-    } else if (mime.startsWith("image/") && total <= MAX_IMAGE_BYTES) {
-      const info = await sharp(await getObjectBuffer(storageKey)).metadata().catch(() => null);
-      if (info?.width && info?.height) {
-        const swap = (info.orientation ?? 1) >= 5; // EXIF 5–8 : image tournée de 90°
-        meta = { width: swap ? info.height : info.width, height: swap ? info.width : info.height, durationSec: null };
-      }
-    }
+    const meta = await describeStoredMedia(storageKey, total);
 
     await db.mediaAsset.update({
       where: { id: mediaAssetId },
       data: {
         status: "READY",
         storageKey,
-        mimeType: mime,
+        mimeType: meta.mime,
         sizeBytes: total,
         width: meta.width,
         height: meta.height,
