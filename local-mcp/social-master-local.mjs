@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Social Master — envoi de médias DEPUIS LE MAC (serveur MCP local, stdio) — CLAUDE.md §31.
 //
-// Branché dans l'app Claude de bureau (et Claude Code), il complète le connecteur distant : celui-ci ne
-// peut pas lire tes fichiers, ce serveur-ci le peut, mais UNIQUEMENT dans Téléchargements, Bureau,
-// Vidéos et Images, et uniquement des médias. Le fichier part directement vers le stockage R2 via une
+// Branché dans l'app Claude de bureau (install-claude-desktop.mjs), il complète le connecteur distant :
+// celui-ci ne peut pas lire tes fichiers, ce serveur-ci le peut, mais UNIQUEMENT dans les dossiers
+// autorisés (Téléchargements, Bureau, Vidéos, Images par défaut ; SOCIAL_MASTER_ROOTS pour en changer)
+// et uniquement des médias. Le fichier part directement vers le stockage R2 via une
 // URL présignée (même circuit que la médiathèque web) ; Claude utilise ensuite le media_id avec le
 // connecteur Social Master (save_draft, schedule_post…).
 //
@@ -329,7 +330,7 @@ server.registerTool(
   {
     title: "Envoyer un média du Mac",
     description:
-      "Envoie une photo ou une vidéo du Mac (Téléchargements, Bureau, Vidéos, Images) vers la médiathèque Social Master. Formats : MP4, MOV, M4V, WebM, JPEG, PNG, WebP, HEIC (converti en JPEG) ; 2 Go max. Renvoie le media_id quand c'est fini, sinon un upload_id à suivre avec get_upload_status.",
+      `Envoie une photo ou une vidéo du Mac (dossiers autorisés : ${Object.keys(ROOTS).join(", ")}) vers la médiathèque Social Master. Formats : MP4, MOV, M4V, WebM, JPEG, PNG, WebP, HEIC (converti en JPEG) ; 2 Go max. Renvoie le media_id quand c'est fini, sinon un upload_id à suivre avec get_upload_status.`,
     inputSchema: { path: z.string().min(1).describe("Chemin du fichier (tel que donné par list_local_media)") },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
