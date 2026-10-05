@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
-import { allowedRoots, authorizeUrl, isInsideRoots, mediaKind, pkcePair, sizeHints } from "../../local-mcp/lib.mjs";
+import { allowedRoots, authorizeUrl, extraRootsFrom, isInsideRoots, mediaKind, pkcePair, sizeHints } from "../../local-mcp/lib.mjs";
 
 // Outil d'envoi depuis le Mac (local-mcp/, CLAUDE.md §31) : garde-fous de sécurité et formats.
 describe("local-mcp : dossiers autorisés", () => {
@@ -12,6 +12,20 @@ describe("local-mcp : dossiers autorisés", () => {
       Images: "/Users/moha/Pictures",
     });
     expect(allowedRoots("/Users/moha", "Test=/tmp/x")).toEqual({ Test: "/tmp/x" });
+  });
+
+  it("dossiers ajoutés par ~/.social-master/config.json : en premier (dossier par défaut), chemins absolus seulement", () => {
+    const extra = extraRootsFrom({ roots: { "À programmer": "/Users/moha/Documents/à programmer", Relatif: "docs", Vide: "" } });
+    expect(extra).toEqual({ "À programmer": "/Users/moha/Documents/à programmer" });
+    expect(Object.keys(allowedRoots("/Users/moha", undefined, extra))).toEqual([
+      "À programmer",
+      "Téléchargements",
+      "Bureau",
+      "Vidéos",
+      "Images",
+    ]);
+    expect(extraRootsFrom(null)).toEqual({});
+    expect(extraRootsFrom({ roots: "pas un objet" })).toEqual({});
   });
 
   it("n'accepte que les fichiers DANS un dossier autorisé (pas de préfixe trompeur ni de sortie)", () => {

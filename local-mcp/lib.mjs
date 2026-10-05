@@ -15,8 +15,12 @@ export const MEDIA_TYPES = {
 };
 export const CONVERTIBLE_TO_JPEG = new Set([".heic", ".heif"]);
 
-/** Dossiers autorisés (jamais d'autre fichier du Mac). `override` : "Nom=/chemin;Nom2=/chemin2" (tests). */
-export function allowedRoots(home, override) {
+/**
+ * Dossiers autorisés (jamais d'autre fichier du Mac) : les dossiers déclarés en plus (`extra`, lus dans
+ * ~/.social-master/config.json) en premier — le premier sert de dossier par défaut — puis Téléchargements,
+ * Bureau, Vidéos et Images. `override` : "Nom=/chemin;Nom2=/chemin2" remplace tout (tests).
+ */
+export function allowedRoots(home, override, extra = {}) {
   if (override) {
     return Object.fromEntries(
       override
@@ -29,11 +33,23 @@ export function allowedRoots(home, override) {
     );
   }
   return {
+    ...extra,
     "Téléchargements": path.join(home, "Downloads"),
     Bureau: path.join(home, "Desktop"),
     "Vidéos": path.join(home, "Movies"),
     Images: path.join(home, "Pictures"),
   };
+}
+
+/** Dossiers supplémentaires d'un config.json ({ "roots": { "Nom": "/chemin absolu" } }) ; le reste est ignoré. */
+export function extraRootsFrom(config) {
+  const roots = config && typeof config === "object" ? config.roots : null;
+  if (!roots || typeof roots !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(roots)
+      .filter(([name, dir]) => name && typeof dir === "string" && path.isAbsolute(dir))
+      .map(([name, dir]) => [name, path.resolve(dir)])
+  );
 }
 
 /** Vrai si `realFile` (chemin RÉEL, liens résolus) est à l'intérieur de l'un des dossiers autorisés (réels). */

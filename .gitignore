@@ -42,3 +42,6 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# extension Claude bureau construite (local-mcp/build-extension.mjs)
+local-mcp/dist/
