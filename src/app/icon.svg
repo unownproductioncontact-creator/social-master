@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="sm-brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00a6f4"/>
+      <stop offset="1" stop-color="#0084d1"/>
+    </linearGradient>
+  </defs>
+  <rect width="24" height="24" rx="7" fill="url(#sm-brand)"/>
+  <g transform="translate(5.5 5.5) scale(0.5416667)" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/>
+    <path d="m21.854 2.147-10.94 10.939"/>
+  </g>
+</svg>

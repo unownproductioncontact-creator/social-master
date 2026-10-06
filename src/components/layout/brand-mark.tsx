@@ -4,6 +4,8 @@ import { Send } from "lucide-react";
  * Marque « Social Master » (maquette) : tuile 24px rayon 7px en dégradé signature
  * contenant l'icône lucide Send (avion en papier) blanche 13px, suivie du nom en 14.5px bold.
  * Partagée entre la sidebar desktop et l'en-tête mobile.
+ * Même dessin que src/app/icon.svg (favicon) et que l'icône de l'app dans le portail TikTok : la revue
+ * TikTok exige les trois identiques. Si la tuile change ici, régénérer avec scripts/build-icons.mjs.
  */
 export function BrandMark() {
   return (
