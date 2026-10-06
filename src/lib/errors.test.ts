@@ -48,6 +48,21 @@ describe("classifyInstagramError", () => {
     expect(r.code).toBe("ig_spam_flag");
   });
 
+  it("réel d'essai refusé (message Meta mentionnant trial) → content_rejected, jamais retenté", () => {
+    const r = classifyInstagramError(
+      new Error(
+        `Graph API Instagram échouée (400): {"error":{"message":"(#100) Trial reels are not available for this account","type":"OAuthException","code":100,"fbtrace_id":"AbC"}}`
+      )
+    );
+    expect(r.errorClass).toBe("content_rejected");
+    expect(r.code).toBe("ig_trial_refused");
+  });
+
+  it("« trial » hors du champ message (fbtrace_id) → pas de faux réel d'essai", () => {
+    const r = classifyInstagramError(igError(1, undefined, "xTrialx"));
+    expect(r.code).not.toBe("ig_trial_refused");
+  });
+
   it("rate-limit app-level (17) → transitoire", () => {
     const r = classifyInstagramError(igError(17));
     expect(r.errorClass).toBe("transient");

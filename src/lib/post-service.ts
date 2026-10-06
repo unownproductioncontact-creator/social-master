@@ -7,6 +7,11 @@ import { schedulePost, unschedulePost, reschedulePost } from "@/lib/scheduler";
 import { checkInstagramCarouselCompatibility, checkTikTokPhotoCompatibility } from "@/lib/media-validation";
 import { normalizeInstagramCollaborators, validateInstagramCollaborators } from "@/lib/instagram-collaborators";
 import {
+  INSTAGRAM_TRIAL_COLLABORATORS_ERROR,
+  INSTAGRAM_TRIAL_REEL_ONLY_ERROR,
+  INSTAGRAM_TRIAL_STRATEGIES,
+} from "@/lib/instagram-trial";
+import {
   computeInstagramContentType,
   computeTikTokContentType,
   computeYouTubeContentType,
@@ -40,6 +45,8 @@ const SavePostSchema = z.object({
   instagramCoverTimeMs: z.number().int().min(0).nullish(),
   // Pseudos Instagram invités en collaboration (≤ 3, validés plus bas). Ignoré pour une Story (§28).
   instagramCollaborators: z.array(z.string().max(64)).max(10).nullish(),
+  // Réel d'essai Instagram (§34) : stratégie Meta, Reel uniquement et sans collaborateurs (validé plus bas).
+  instagramTrial: z.enum(INSTAGRAM_TRIAL_STRATEGIES).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -123,6 +130,11 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   const collaboratorsError = validateInstagramCollaborators(igCollaborators, instagramAccount?.username);
   if (collaboratorsError) return { error: collaboratorsError };
 
+  // Réel d'essai (§34) : uniquement un Reel, et jamais avec des collaborateurs (règle Instagram).
+  const igTrial = data.instagramTrial ?? null;
+  if (igTrial && igContentType !== "REEL") return { error: INSTAGRAM_TRIAL_REEL_ONLY_ERROR };
+  if (igTrial && igCollaborators.length > 0) return { error: INSTAGRAM_TRIAL_COLLABORATORS_ERROR };
+
   // ANTI-DOUBLE-PUBLICATION (P1-2) : une plateforme qui possède DÉJÀ une cible publiée/inbox sur ce
   // post est « déjà servie ». On ne doit ni supprimer cette cible (perte d'historique) ni en créer une
   // nouvelle (republication) — même si la case est encore cochée. Cas atteignable : un post
@@ -171,12 +183,14 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
           contentType: igContentType,
           publishMode: "AUTO",
           status: "PENDING",
-          // Frame de couverture uniquement pertinente pour un Reel vidéo ; collaborateurs hors Story.
+          // Frame de couverture uniquement pertinente pour un Reel vidéo ; collaborateurs hors Story ;
+          // réel d'essai sur un Reel seulement (validé plus haut).
           platformOptions: {
             ...(igContentType === "REEL" && data.instagramCoverTimeMs != null
               ? { coverTimeMs: Math.round(data.instagramCoverTimeMs) }
               : {}),
             ...(igCollaborators.length > 0 ? { collaborators: igCollaborators } : {}),
+            ...(igTrial ? { trial: igTrial } : {}),
           },
         },
       });

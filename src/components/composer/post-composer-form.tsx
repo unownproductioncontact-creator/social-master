@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,6 +32,7 @@ import {
   parseInstagramCollaborators,
   validateInstagramCollaborators,
 } from "@/lib/instagram-collaborators";
+import { INSTAGRAM_TRIAL_COLLABORATORS_ERROR, type InstagramTrialStrategy } from "@/lib/instagram-trial";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
@@ -51,6 +53,13 @@ type MediaOption = {
   height?: number | null;
   sizeBytes?: number | null;
 };
+
+/** Réel d'essai (§34) : « OFF » = Reel classique, sinon la stratégie Meta de partage aux abonnés. */
+const IG_TRIAL_OPTIONS = [
+  { value: "OFF", label: "Non, Reel classique" },
+  { value: "MANUAL", label: "Oui, je le partage à mes abonnés depuis Instagram" },
+  { value: "SS_PERFORMANCE", label: "Oui, partagé à mes abonnés s’il marche bien" },
+];
 
 const IG_CONTENT_TYPE_LABELS: Record<string, string> = {
   REEL: "Reel",
@@ -111,6 +120,8 @@ export function PostComposerForm({
     instagramCoverTimeMs?: number | null;
     /** Pseudos Instagram invités en collaboration (PostTarget.platformOptions.collaborators). */
     instagramCollaborators?: string[];
+    /** Réel d'essai (PostTarget.platformOptions.trial) — null/absent = Reel classique. */
+    instagramTrial?: InstagramTrialStrategy | null;
   };
   /** Valeur par défaut du champ de programmation (datetime-local, heure locale). Nouveau post seulement. */
   initialScheduleLocal?: string;
@@ -140,6 +151,7 @@ export function PostComposerForm({
   const [collaboratorsText, setCollaboratorsText] = useState(
     (initialPost?.instagramCollaborators ?? []).map((u) => `@${u}`).join(", ")
   );
+  const [trialChoice, setTrialChoice] = useState<string>(initialPost?.instagramTrial ?? "OFF");
   const [dateTime, setDateTime] = useState(initialScheduleLocal ?? "");
   // Vrai dès que l'utilisateur modifie lui-même le champ de programmation (saisie ou raccourci) — sert
   // à protéger sa saisie contre le pré-remplissage mémoire ci-dessous (voir l'effet de montage).
@@ -180,6 +192,12 @@ export function PostComposerForm({
     targetInstagram && instagramConnected && !servedInstagram && igContentType !== null && igContentType !== "STORY";
   const parsedCollaborators = useMemo(() => parseInstagramCollaborators(collaboratorsText), [collaboratorsText]);
   const collaboratorsError = igCollaboratorsVisible ? validateInstagramCollaborators(parsedCollaborators) : null;
+  // Réel d'essai (§34) : Reel uniquement, tant que pas publié ; jamais avec des collaborateurs.
+  const igTrialVisible = targetInstagram && instagramConnected && !servedInstagram && igContentType === "REEL";
+  const igTrial: InstagramTrialStrategy | null =
+    igTrialVisible && (trialChoice === "MANUAL" || trialChoice === "SS_PERFORMANCE") ? trialChoice : null;
+  const trialError =
+    igTrial && igCollaboratorsVisible && parsedCollaborators.length > 0 ? INSTAGRAM_TRIAL_COLLABORATORS_ERROR : null;
 
   // Avertissements média YouTube (non bloquants) : > 3 min ou horizontal → « pas classé Short ». Calculés
   // seulement quand la case est cochée et qu'un unique média vidéo est sélectionné (sinon rien à dire).
@@ -243,8 +261,8 @@ export function PostComposerForm({
    * existe déjà : on redirige vers sa page d'édition (le SchedulePanel y permet de reprendre).
    */
   function submit(mode: "schedule" | "draft" | "now") {
-    if (collaboratorsError) {
-      toast.error(collaboratorsError);
+    if (collaboratorsError || trialError) {
+      toast.error(collaboratorsError ?? trialError);
       return;
     }
     const hashtags = hashtagsText
@@ -267,6 +285,7 @@ export function PostComposerForm({
         youtubeTitle: youtubeTitleVisible && youtubeTitle.trim() ? youtubeTitle.trim() : undefined,
         instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
         instagramCollaborators: igCollaboratorsVisible ? parsedCollaborators : undefined,
+        instagramTrial: igTrial,
       });
       if (result.error) {
         toast.error(result.error);
@@ -541,6 +560,33 @@ export function PostComposerForm({
             valueMs={coverTimeMs}
             onChange={setCoverTimeMs}
           />
+        )}
+
+        {igTrialVisible && (
+          <div className="space-y-1.5 rounded-lg border border-border p-3">
+            <Label htmlFor="ig-trial" className="text-xs font-semibold">
+              Réel d’essai
+            </Label>
+            <Select items={IG_TRIAL_OPTIONS} value={trialChoice} onValueChange={(v) => setTrialChoice(v as string)}>
+              <SelectTrigger id="ig-trial" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {IG_TRIAL_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {trialError ? (
+              <p className="text-[11.5px] text-destructive">{trialError}</p>
+            ) : (
+              <p className="text-[11.5px] text-muted-foreground">
+                Un réel d’essai est d’abord montré uniquement aux personnes qui ne vous suivent pas.
+              </p>
+            )}
+          </div>
         )}
 
         {igCollaboratorsVisible && (

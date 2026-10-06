@@ -1,5 +1,6 @@
 import "server-only";
 import { appUrl } from "@/lib/app-url";
+import type { InstagramTrialStrategy } from "@/lib/instagram-trial";
 
 const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
 const CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token";
@@ -167,6 +168,7 @@ type CreateContainerParams = {
   isVideo?: boolean; // requis pour distinguer une Story image d'une Story vidéo
   thumbOffsetMs?: number; // Reel : frame de couverture (thumb_offset, en ms depuis le début de la vidéo)
   collaborators?: string[]; // Post/Reel : pseudos invités en collaboration (≤ 3) — ignoré pour une Story
+  trialStrategy?: InstagramTrialStrategy | null; // Reel : réel d'essai (trial_params, §34) — ignoré hors REELS
 };
 
 /** Paramètre `collaborators` (tableau JSON de pseudos, CLAUDE.md §28) — absent si la liste est vide. */
@@ -212,6 +214,10 @@ export async function createMediaContainer(params: CreateContainerParams): Promi
     // Couverture du Reel : frame à `thumbOffsetMs` ms (choisie dans le composer pour matcher TikTok).
     if (params.thumbOffsetMs != null && params.thumbOffsetMs >= 0) {
       body.thumb_offset = String(Math.round(params.thumbOffsetMs));
+    }
+    // Réel d'essai : montré d'abord aux seuls non-abonnés (objet JSON, comme `collaborators`).
+    if (params.trialStrategy) {
+      body.trial_params = JSON.stringify({ graduation_strategy: params.trialStrategy });
     }
   } else if (params.mediaType === "STORIES") {
     // Pas de `caption` sur une Story : l'API Instagram ne rend aucune légende texte sur les Stories

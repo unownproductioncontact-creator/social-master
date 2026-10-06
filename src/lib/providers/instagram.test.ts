@@ -149,6 +149,20 @@ describe("Publication média unique", () => {
     expect(posts[2].body?.get("collaborators")).toBeNull();
   });
 
+  it("réel d'essai : trial_params JSON sur un Reel, jamais sur une image ni une Story", async () => {
+    mockFetch(() => res({ id: "cont1" }));
+    const base = { igUserId: "ig", accessToken: "t", caption: "c", trialStrategy: "SS_PERFORMANCE" as const };
+    await createMediaContainer({ ...base, mediaType: "REELS", mediaUrl: "https://m/v.mp4" });
+    await createMediaContainer({ ...base, mediaType: "IMAGE", mediaUrl: "https://m/i.jpg" });
+    await createMediaContainer({ ...base, mediaType: "STORIES", mediaUrl: "https://m/s.mp4", isVideo: true });
+    await createMediaContainer({ ...base, trialStrategy: null, mediaType: "REELS", mediaUrl: "https://m/v.mp4" });
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(JSON.parse(posts[0].body!.get("trial_params")!)).toEqual({ graduation_strategy: "SS_PERFORMANCE" });
+    expect(posts[1].body?.get("trial_params")).toBeNull();
+    expect(posts[2].body?.get("trial_params")).toBeNull();
+    expect(posts[3].body?.get("trial_params")).toBeNull();
+  });
+
   it("sans collaborateurs : aucun paramètre collaborators envoyé", async () => {
     mockFetch(() => res({ id: "cont1" }));
     await createMediaContainer({ igUserId: "ig", accessToken: "t", caption: "c", mediaType: "IMAGE", mediaUrl: "u", collaborators: [] });

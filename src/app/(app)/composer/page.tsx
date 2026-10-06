@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { trialFromOptions } from "@/lib/instagram-trial";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -100,6 +101,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         instagramCoverTimeMs:
           (igTarget?.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs ?? null,
         instagramCollaborators: collaboratorsFromOptions(igTarget?.platformOptions),
+        instagramTrial: trialFromOptions(igTarget?.platformOptions),
       };
     }
   } else if (mediaParam && readyIds.has(mediaParam)) {

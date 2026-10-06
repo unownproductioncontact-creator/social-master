@@ -94,6 +94,15 @@ export function classifyInstagramError(err: unknown): ClassifiedError {
   if (code === 190 || (subcode !== null && IG_REAUTH_SUBCODES.has(subcode))) {
     return { errorClass: "account_issue", code: "ig_token_invalid", message: "Connexion Instagram expirée — reconnectez votre compte." };
   }
+  // Réel d'essai refusé (compte pas éligible, option indisponible…) : permanent, jamais retenté (§34).
+  // Repéré dans le champ "message" de l'erreur Meta, pas dans tout le texte brut (cf. fbtrace_id).
+  if (/"message"\s*:\s*"[^"]*trial/i.test(message)) {
+    return {
+      errorClass: "content_rejected",
+      code: "ig_trial_refused",
+      message: "Instagram a refusé le réel d'essai (compte pas encore éligible ?). Republiez-le en Reel classique.",
+    };
+  }
   // Média non conforme (specs format/ratio/durée).
   if (code === 36000 || (subcode !== null && IG_MEDIA_SUBCODES.has(subcode))) {
     return { errorClass: "content_rejected", code: "ig_media_invalid", message: "Instagram a refusé ce média (format, ratio ou légende invalide)." };

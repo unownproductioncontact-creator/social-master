@@ -11,6 +11,7 @@ import {
   unschedulePostForUser,
 } from "@/lib/post-service";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { TRIAL_STRATEGY_BY_CHOICE, trialChoice, trialFromOptions } from "@/lib/instagram-trial";
 import { appUrl } from "@/lib/app-url";
 import { buildStorageKey } from "@/lib/storage";
 import { resolveShareLink } from "@/lib/media-import/share-link";
@@ -33,7 +34,7 @@ function instructions(app: string): string {
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
-- Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende) et attends sa confirmation.`;
+- Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende, réel d'essai éventuel) et attends sa confirmation.`;
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
@@ -282,6 +283,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           error: t.errorMessage ?? undefined,
           youtube_title: t.platform === "YOUTUBE" ? (t.platformOptions as { title?: string } | null)?.title : undefined,
           instagram_collaborators: t.platform === "INSTAGRAM" ? collaboratorsFromOptions(t.platformOptions) : undefined,
+          instagram_trial_reel: t.platform === "INSTAGRAM" ? trialChoice(trialFromOptions(t.platformOptions)) : undefined,
           tiktok_reception: receptions.get(t.id),
         })),
         created_at: fmt(post.createdAt),
@@ -381,6 +383,12 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           .max(3)
           .optional()
           .describe("Jusqu'à 3 pseudos Instagram invités en collaboration (pas en Story)"),
+        instagram_trial_reel: z
+          .enum(["manual", "auto"])
+          .optional()
+          .describe(
+            "Réel d'essai Instagram : d'abord montré aux seuls non-abonnés. Reel d'une seule vidéo, hors Story, sans collaborateurs. manual = l'utilisateur le partage ensuite à ses abonnés depuis l'app Instagram ; auto = Instagram le partage tout seul s'il marche bien"
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -396,6 +404,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         targetYoutube: args.youtube,
         youtubeTitle: args.youtube_title ?? null,
         instagramCollaborators: args.instagram_collaborators ?? null,
+        instagramTrial: args.instagram_trial_reel ? TRIAL_STRATEGY_BY_CHOICE[args.instagram_trial_reel] : null,
       });
       if (result.error || !result.postId) return fail(result.error ?? "Enregistrement impossible.");
       return ok({ post_id: result.postId, status: "DRAFT", next: "schedule_post ou publish_post_now" });

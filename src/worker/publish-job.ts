@@ -12,6 +12,7 @@ import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from
 import { deliverTikTokDraft, tiktokReception, type TikTokReception } from "@/lib/tiktok-draft";
 import { freshTikTokAccessToken } from "@/lib/tiktok-token";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { trialFromOptions } from "@/lib/instagram-trial";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
 import { notifyTelegram } from "@/lib/telegram";
@@ -141,6 +142,8 @@ async function processTarget(postTargetId: string): Promise<void> {
               isVideo: media.mimeType.startsWith("video/"),
               thumbOffsetMs: coverTimeMs ?? undefined,
               collaborators,
+              // Réel d'essai (§34) : Reel uniquement.
+              trialStrategy: target.contentType === "REEL" ? trialFromOptions(target.platformOptions) : null,
             });
           })();
 

@@ -14,6 +14,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { CopyCaptionButton } from "@/components/history/copy-caption-button";
 import { AutoRefresh } from "@/components/util/auto-refresh";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { trialFromOptions } from "@/lib/instagram-trial";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -65,6 +66,8 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
   }));
 
   const isDraft = post.status === "DRAFT";
+  // Réel d'essai (§34) : rappelé en lecture seule, sinon rien ne le distingue d'un Reel classique.
+  const igTrial = trialFromOptions(post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions);
 
   // Plateformes déjà servies (P1-2) : une cible PUBLISHED/SENT_TO_INBOX ne sera jamais republiée par le
   // moteur (voir savePostDraft) — le formulaire l'indique en verrouillant la case correspondante.
@@ -149,6 +152,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             instagramCollaborators: collaboratorsFromOptions(
               post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions
             ),
+            instagramTrial: igTrial,
           }}
         />
       ) : (
@@ -156,6 +160,14 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           {post.caption}
           {post.hashtags.length > 0 && (
             <p className="text-muted-foreground">{post.hashtags.map((h) => `#${h}`).join(" ")}</p>
+          )}
+          {igTrial && (
+            <p className="text-[12.5px] text-muted-foreground">
+              Instagram : réel d’essai, montré d’abord aux non-abonnés —{" "}
+              {igTrial === "MANUAL"
+                ? "à partager à vos abonnés depuis l’app Instagram."
+                : "partagé à vos abonnés s’il marche bien."}
+            </p>
           )}
         </div>
       )}
