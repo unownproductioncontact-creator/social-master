@@ -52,7 +52,7 @@ export function MediaRetentionForm({ mediaRetentionDays }: { mediaRetentionDays:
         <Label htmlFor="media-retention" className="text-[12.5px] font-semibold text-foreground">
           Supprimer automatiquement les médias publiés après
         </Label>
-        <Select value={value} onValueChange={(v) => setValue(v as string)}>
+        <Select items={OPTIONS} value={value} onValueChange={(v) => setValue(v as string)}>
           <SelectTrigger id="media-retention" className="w-full">
             <SelectValue />
           </SelectTrigger>
@@ -68,7 +68,7 @@ export function MediaRetentionForm({ mediaRetentionDays }: { mediaRetentionDays:
       <p className="text-[12px] text-muted-foreground">
         « Dès la publication » retire le fichier aussitôt le post entièrement publié ; sinon après le
         délai choisi. Seuls les médias dont <span className="font-medium text-foreground">toutes</span> les
-        publications sont parties sont concernés — l'historique et les liens vers les posts restent intacts.
+        publications sont parties sont concernés — l’historique et les liens vers les posts restent intacts.
       </p>
       <Button onClick={handleSave} disabled={isPending}>
         {isPending ? "Enregistrement…" : "Enregistrer"}
