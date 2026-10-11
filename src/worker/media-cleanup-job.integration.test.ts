@@ -1,93 +1,115 @@
-// Test d'intégration léger : exerce la vraie requête Prisma (findMany/delete) contre la base de
-// dev locale (voir CLAUDE.md §13/§16), sur le même modèle que storage-check-job.integration.test.ts.
-// N'implique pas pg-boss (pas de queue), donc pas exposé au piège de protocole documenté pour les
-// jobs pg-boss fraîchement créés. deleteObject() est appelé pour de vrai contre R2, mais les clés
-// de test n'existent pas sur R2 — best-effort, l'erreur attendue est absorbée par le job lui-même
-// (voir media-cleanup-job.ts), donc ce test n'a pas besoin de clés R2 réelles pour passer.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { db } from "@/lib/db";
-import { runMediaCleanup } from "@/worker/media-cleanup-job";
+// Test d'intégration : exerce les vraies requêtes Prisma contre la base de dev locale (CLAUDE.md
+// §13/§16). N'implique pas pg-boss (pas de queue). R2 est simulé : on veut vérifier QUELLES clés sont
+// supprimées (original, miniature, copie JPEG), pas l'appel réseau.
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+
+const deleted: string[] = [];
+
+vi.mock("@/lib/storage", () => ({
+  deleteObject: vi.fn(async (key: string) => void deleted.push(key)),
+}));
+vi.mock("@/lib/telegram", () => ({ notifyTelegram: vi.fn(async () => {}) }));
+
+const { db } = await import("@/lib/db");
+const { runMediaCleanup } = await import("@/worker/media-cleanup-job");
+const { notifyTelegram } = await import("@/lib/telegram");
 
 const TEST_EMAIL = "vitest-media-cleanup@test.local";
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * ONE_HOUR_MS;
 
 let userId: string;
-let staleAssetId: string;
-let recentAssetId: string;
-let staleReadyAssetId: string;
+const ids: Record<string, string> = {};
+const createdPostIds: string[] = [];
+/** Ce que le PREMIER passage du job a supprimé / notifié (le jeu de données est semé une seule fois). */
+let firstRunDeleted: string[] = [];
+let firstRunMessages: string[] = [];
+
+async function createAsset(name: string, ageMs: number, extra: { status?: "UPLOADING" | "READY"; mimeType?: string } = {}) {
+  const asset = await db.mediaAsset.create({
+    data: {
+      userId,
+      storageKey: `media/vitest-cleanup/${name}`,
+      mimeType: extra.mimeType ?? "image/png",
+      sizeBytes: 1000,
+      status: extra.status ?? "READY",
+      createdAt: new Date(Date.now() - ageMs),
+    },
+  });
+  ids[name] = asset.id;
+  return asset;
+}
 
 beforeAll(async () => {
-  const user = await db.user.create({
-    data: { email: TEST_EMAIL, passwordHash: "not-a-real-hash", name: "Vitest" },
-  });
+  await db.user.deleteMany({ where: { email: TEST_EMAIL } });
+  const user = await db.user.create({ data: { email: TEST_EMAIL, passwordHash: "not-a-real-hash", name: "Vitest" } });
   userId = user.id;
 
-  // Média UPLOADING vieux de 2h : doit être purgé.
-  const stale = await db.mediaAsset.create({
-    data: {
-      userId,
-      storageKey: "media/vitest-cleanup/stale.jpg",
-      mimeType: "image/jpeg",
-      sizeBytes: 1000,
-      status: "UPLOADING",
-      createdAt: new Date(Date.now() - 2 * ONE_HOUR_MS),
-    },
-  });
-  staleAssetId = stale.id;
+  // Passe 1 — uploads jamais finalisés.
+  await createAsset("stale-upload.jpg", 2 * ONE_HOUR_MS, { status: "UPLOADING", mimeType: "image/jpeg" });
+  await createAsset("recent-upload.jpg", 5 * 60 * 1000, { status: "UPLOADING", mimeType: "image/jpeg" });
+  await createAsset("fresh-ready.jpg", 2 * ONE_HOUR_MS, { mimeType: "image/jpeg" }); // READY récent : jamais purgé
 
-  // Média UPLOADING récent (5 min) : ne doit PAS être purgé, l'upload est peut-être encore en cours.
-  const recent = await db.mediaAsset.create({
-    data: {
-      userId,
-      storageKey: "media/vitest-cleanup/recent.jpg",
-      mimeType: "image/jpeg",
-      sizeBytes: 1000,
-      status: "UPLOADING",
-      createdAt: new Date(Date.now() - 5 * 60 * 1000),
-    },
-  });
-  recentAssetId = recent.id;
+  // Passe 3 — médias jamais utilisés.
+  await createAsset("unused-old.png", 40 * DAY_MS);
+  await createAsset("unused-recent.png", 10 * DAY_MS);
+  await createAsset("used-by-draft.png", 90 * DAY_MS);
+  const draft = await db.post.create({ data: { userId, caption: "brouillon", status: "DRAFT" } });
+  createdPostIds.push(draft.id);
+  await db.postMedia.create({ data: { postId: draft.id, mediaAssetId: ids["used-by-draft.png"], position: 0 } });
 
-  // Média READY vieux de 2h : ne doit JAMAIS être purgé (statut différent), même vieux.
-  const staleReady = await db.mediaAsset.create({
-    data: {
-      userId,
-      storageKey: "media/vitest-cleanup/stale-ready.jpg",
-      mimeType: "image/jpeg",
-      sizeBytes: 1000,
-      status: "READY",
-      createdAt: new Date(Date.now() - 2 * ONE_HOUR_MS),
-    },
-  });
-  staleReadyAssetId = staleReady.id;
+  deleted.length = 0;
+  vi.mocked(notifyTelegram).mockClear();
+  await runMediaCleanup();
+  firstRunDeleted = [...deleted];
+  firstRunMessages = vi.mocked(notifyTelegram).mock.calls.map((c) => String(c[0]));
+});
+
+beforeEach(() => {
+  deleted.length = 0;
+  vi.mocked(notifyTelegram).mockClear();
 });
 
 afterAll(async () => {
-  // Nettoyage : le média "stale" doit déjà avoir été supprimé par le job lui-même ; on nettoie les
-  // autres + le user de test dans tous les cas (idempotent : delete d'un id déjà absent est catché).
-  await db.mediaAsset.delete({ where: { id: recentAssetId } }).catch(() => {});
-  await db.mediaAsset.delete({ where: { id: staleReadyAssetId } }).catch(() => {});
-  await db.mediaAsset.delete({ where: { id: staleAssetId } }).catch(() => {});
-  await db.user.delete({ where: { id: userId } }).catch(() => {});
+  await db.post.deleteMany({ where: { id: { in: createdPostIds } } });
+  await db.user.deleteMany({ where: { email: TEST_EMAIL } }); // cascade : médias restants
 });
 
 describe("runMediaCleanup (intégration DB)", () => {
-  it("purge sélectivement : supprime le UPLOADING vieux, garde le récent et le READY", async () => {
-    await expect(runMediaCleanup()).resolves.toBeUndefined();
-
-    const stale = await db.mediaAsset.findUnique({ where: { id: staleAssetId } });
-    expect(stale).toBeNull();
-
-    const recent = await db.mediaAsset.findUnique({ where: { id: recentAssetId } });
-    expect(recent).not.toBeNull();
-    expect(recent?.status).toBe("UPLOADING");
-
-    const staleReady = await db.mediaAsset.findUnique({ where: { id: staleReadyAssetId } });
-    expect(staleReady).not.toBeNull();
-    expect(staleReady?.status).toBe("READY");
+  it("passe 1 : supprime l'envoi jamais finalisé vieux de 2 h, garde celui de 5 min", async () => {
+    expect(await db.mediaAsset.findUnique({ where: { id: ids["stale-upload.jpg"] } })).toBeNull();
+    expect((await db.mediaAsset.findUnique({ where: { id: ids["recent-upload.jpg"] } }))?.status).toBe("UPLOADING");
   });
 
-  it("ne plante pas si aucun média orphelin n'est présent (deuxième exécution, file déjà purgée)", async () => {
+  it("passe 3 : un média jamais utilisé depuis plus de 30 j disparaît avec TOUTES ses clés R2", async () => {
+    expect(await db.mediaAsset.findUnique({ where: { id: ids["unused-old.png"] } })).toBeNull();
+    // Régression du 11/10/2026 : la copie JPEG d'Instagram n'était jamais supprimée.
+    expect(firstRunDeleted).toEqual(
+      expect.arrayContaining([
+        "media/vitest-cleanup/unused-old.png",
+        "media/vitest-cleanup/unused-old.png.thumb.jpg",
+        "media/vitest-cleanup/unused-old.png.converted.jpg",
+      ])
+    );
+  });
+
+  it("garde un média récent, un média utilisé par un brouillon (et ce brouillon), et un READY frais", async () => {
+    for (const name of ["unused-recent.png", "used-by-draft.png", "fresh-ready.jpg"]) {
+      expect(await db.mediaAsset.findUnique({ where: { id: ids[name] } }), name).not.toBeNull();
+    }
+    expect(await db.post.findUnique({ where: { id: createdPostIds[0] } })).not.toBeNull();
+    expect(firstRunDeleted.some((key) => key.includes("used-by-draft") || key.includes("unused-recent"))).toBe(false);
+  });
+
+  it("prévient sur Telegram des médias inutilisés supprimés", async () => {
+    // Le job balaie TOUS les utilisateurs : d'éventuels restes d'autres essais dans la base de dev
+    // s'ajoutent au compte, on vérifie donc le message plutôt que son nombre exact.
+    expect(firstRunMessages.some((m) => /médias? jamais utilisés? depuis plus de 30 jours supprimés?/.test(m))).toBe(true);
+  });
+
+  it("deuxième passage : rien à faire, aucune suppression ni message", async () => {
     await expect(runMediaCleanup()).resolves.toBeUndefined();
+    expect(deleted).toEqual([]);
+    expect(notifyTelegram).not.toHaveBeenCalled();
   });
 });

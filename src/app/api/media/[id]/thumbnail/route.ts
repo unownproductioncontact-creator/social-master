@@ -2,12 +2,9 @@ import { NextResponse } from "next/server";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { putObjectBuffer } from "@/lib/storage";
+import { thumbnailKeyFor } from "@/lib/media-keys";
 
 const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024; // 2 Mo — largement suffisant pour un JPEG ~640px
-
-function thumbnailKeyFor(storageKey: string): string {
-  return `${storageKey}.thumb.jpg`;
-}
 
 /**
  * Reçoit une miniature JPEG générée côté client (capture d'une frame vidéo) et l'attache au

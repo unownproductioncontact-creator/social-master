@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { selectPurgeableMedia, type RetentionCandidate } from "@/lib/media-retention";
+import {
+  daysBeforeUnusedPurge,
+  selectPurgeableMedia,
+  selectUnusedStaleMedia,
+  UNUSED_MEDIA_MAX_AGE_DAYS,
+  type RetentionCandidate,
+} from "@/lib/media-retention";
 
 const NOW = new Date("2026-07-10T12:00:00.000Z");
 const DAY = 24 * 60 * 60 * 1000;
@@ -97,5 +103,47 @@ describe("selectPurgeableMedia", () => {
 
   it("retourne un tableau vide sur une liste vide", () => {
     expect(selectPurgeableMedia([], 30, NOW)).toEqual([]);
+  });
+});
+
+describe("selectUnusedStaleMedia (médias jamais utilisés, 30 jours)", () => {
+  const unused = (id: string, ageDays: number, postCount = 0) => ({
+    id,
+    createdAt: new Date(NOW.getTime() - ageDays * DAY),
+    postCount,
+  });
+
+  it("le délai confirmé par le user est de 30 jours", () => {
+    expect(UNUSED_MEDIA_MAX_AGE_DAYS).toBe(30);
+  });
+
+  it("supprime un média sans aucun post, ajouté il y a plus de 30 jours", () => {
+    expect(selectUnusedStaleMedia([unused("a", 31)], NOW)).toEqual(["a"]);
+  });
+
+  it("garde un média récent, et un média utilisé quel que soit son âge (un brouillon suffit)", () => {
+    const assets = [unused("recent", 10), unused("used-old", 400, 1), unused("draft-old", 90, 2)];
+    expect(selectUnusedStaleMedia(assets, NOW)).toEqual([]);
+  });
+
+  it("frontière stricte : exactement 30 jours = gardé, une milliseconde de plus = supprimé", () => {
+    const atLimit = { id: "at", createdAt: new Date(NOW.getTime() - 30 * DAY), postCount: 0 };
+    const over = { id: "over", createdAt: new Date(NOW.getTime() - 30 * DAY - 1), postCount: 0 };
+    expect(selectUnusedStaleMedia([atLimit], NOW)).toEqual([]);
+    expect(selectUnusedStaleMedia([over], NOW)).toEqual(["over"]);
+  });
+
+  it("un délai ≤ 0 ou non fini ne supprime rien (garde-fou)", () => {
+    for (const days of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(selectUnusedStaleMedia([unused("a", 999)], NOW, days)).toEqual([]);
+    }
+  });
+});
+
+describe("daysBeforeUnusedPurge", () => {
+  it("compte les jours restants, arrondis au supérieur, jamais négatifs", () => {
+    expect(daysBeforeUnusedPurge(new Date(NOW.getTime() - 6 * DAY), NOW)).toBe(24);
+    expect(daysBeforeUnusedPurge(new Date(NOW.getTime() - 29.5 * DAY), NOW)).toBe(1);
+    expect(daysBeforeUnusedPurge(new Date(NOW.getTime() - 45 * DAY), NOW)).toBe(0);
   });
 });

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { MediaLibrary } from "@/components/library/media-library";
 import type { MediaCardData } from "@/components/library/media-card";
+import { daysBeforeUnusedPurge } from "@/lib/media-retention";
 
 export default async function LibraryPage() {
   const session = await verifySession();
@@ -12,6 +13,8 @@ export default async function LibraryPage() {
     include: { _count: { select: { postMedia: true } } },
     orderBy: { createdAt: "desc" },
   });
+
+  const now = new Date();
 
   // Les URLs publiques sont calculées ici (serveur) car `@/lib/storage` est `server-only` : la carte
   // cliente ne reçoit que des URLs prêtes, jamais les clés de stockage brutes.
@@ -25,6 +28,7 @@ export default async function LibraryPage() {
     mediaUrl: getPublicMediaUrl(asset.storageKey),
     thumbnailUrl: asset.thumbnailKey ? getPublicMediaUrl(asset.thumbnailKey) : null,
     inUseCount: asset._count.postMedia,
+    purgeInDays: asset._count.postMedia === 0 ? daysBeforeUnusedPurge(asset.createdAt, now) : null,
   }));
 
   return <MediaLibrary assets={cards} />;

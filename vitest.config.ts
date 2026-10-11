@@ -5,7 +5,8 @@ import path from "node:path";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // Le Worker Cloudflare des médias (JavaScript pur) est testé avec le reste.
+    include: ["src/**/*.test.ts", "cloudflare/**/*.test.ts"],
     // Le test d'intégration du scheduler ouvre des connexions Prisma + pg-boss ; les paralléliser
     // avec d'autres fichiers de test n'apporte rien ici (peu de tests) et évite toute contention
     // sur la petite base Postgres locale de dev.

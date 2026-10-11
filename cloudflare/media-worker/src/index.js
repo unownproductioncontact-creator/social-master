@@ -7,15 +7,26 @@
 //   GET|HEAD /m/<clé>?exp=<epoch s>&sig=<hex>  lecture signée : HMAC-SHA256("<clé>\n<exp>", SIGNING_SECRET)
 //   GET /tiktok<jeton>.txt                      fichiers de vérification d'URL TikTok (variable TIKTOK_VERIFICATIONS)
 //   POST /push                                  (Bearer PUSH_SECRET) envoie un objet R2 vers un hôte autorisé
+//   POST /import                                (Bearer PUSH_SECRET) télécharge une URL publique et l'écrit dans R2
+//   GET /usage?cursor=&prefix=&keys=1           (Bearer PUSH_SECRET) une page du contenu réel du bucket
 //   POST /selftest/push                         (Bearer PUSH_SECRET, SELFTEST=1) mesure d'un envoi de test
+
+import { importFromUrl, isValidImportKey, checkImportUrl } from "./import.js";
 
 // Hôtes vers lesquels /push peut envoyer : jamais un relais ouvert.
 const PUSH_HOSTS = new Set(["www.googleapis.com", "youtube.googleapis.com"]);
 const SELFTEST_URL = "https://speed.cloudflare.com/__up";
 const encoder = new TextEncoder();
 
+// Plafond d'un import (même valeur que l'application : MAX_IMPORT_BYTES).
+const MAX_IMPORT_BYTES = 2_000_000_000;
+// Pendant un import, un espace est écrit toutes les 10 s : la connexion de l'appelant ne reste jamais
+// muette (sinon son client HTTP abandonne au bout de 5 min sans en-têtes). Un JSON précédé d'espaces
+// reste du JSON valide.
+const KEEPALIVE_MS = 10_000;
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith("/m/") && (request.method === "GET" || request.method === "HEAD")) {
@@ -25,6 +36,8 @@ export default {
         return serveTikTokVerification(env, url.pathname.slice(1));
       }
       if (request.method === "POST" && url.pathname === "/push") return await push(request, env);
+      if (request.method === "POST" && url.pathname === "/import") return await importRoute(request, env, ctx, url);
+      if (request.method === "GET" && url.pathname === "/usage") return await usage(request, env, url);
       if (request.method === "POST" && url.pathname === "/selftest/push" && env.SELFTEST === "1") {
         return await selftestPush(request, env);
       }
@@ -177,6 +190,93 @@ async function push(request, env) {
     if (value) picked[name] = value;
   }
   return Response.json({ status: res.status, headers: picked, body: body.slice(0, 20000), bytes: read.length, ms: Date.now() - started });
+}
+
+// ---------------------------------------------------------------- import par lien
+
+/**
+ * Corps JSON : { url, key, maxBytes? , contentType? }. Écrit le fichier distant dans R2 sous `key`
+ * (jamais d'écrasement, clé limitée à media/<utilisateur>/<fichier>). La réponse est un flux JSON :
+ * des espaces de maintien de connexion, puis le résultat de `importFromUrl` — toujours HTTP 200 une
+ * fois l'import démarré, c'est le champ `ok` qui fait foi.
+ */
+async function importRoute(request, env, ctx, url) {
+  if (!authorized(request, env)) return new Response("Unauthorized", { status: 401 });
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return Response.json({ error: "corps_invalide" }, { status: 400 });
+  }
+  const key = String((input && input.key) || "");
+  if (!isValidImportKey(key)) return Response.json({ error: "cle_invalide" }, { status: 400 });
+  const target = String((input && input.url) || "");
+  const checked = checkImportUrl(target, url.hostname);
+  if (!checked.ok) return Response.json({ ok: false, code: "host_refused", message: checked.message });
+
+  const requested = Number(input.maxBytes);
+  const maxBytes = Number.isSafeInteger(requested) && requested > 0 ? Math.min(requested, MAX_IMPORT_BYTES) : MAX_IMPORT_BYTES;
+  const contentType = typeof input.contentType === "string" && input.contentType.length <= 100 ? input.contentType : undefined;
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const keepAlive = setInterval(() => {
+    writer.write(encoder.encode(" ")).catch(() => {});
+  }, KEEPALIVE_MS);
+
+  const started = Date.now();
+  const job = importFromUrl(env, { url: target, key, maxBytes, contentType, selfHost: url.hostname })
+    .catch((err) => ({ ok: false, code: "storage_error", message: String((err && err.message) || err).slice(0, 200) }))
+    .then(async (result) => {
+      clearInterval(keepAlive);
+      // Jamais l'URL dans les journaux (elle peut porter un jeton de partage) : hôte seulement.
+      console.log(
+        "[media-worker] import",
+        JSON.stringify({ host: checked.url.hostname, key, ok: result.ok, code: result.code, size: result.size, ms: Date.now() - started })
+      );
+      try {
+        await writer.write(encoder.encode(JSON.stringify(result)));
+        await writer.close();
+      } catch {
+        // l'appelant a raccroché : le résultat est perdu, mais l'objet écrit sera nettoyé par le balayage
+      }
+    });
+  ctx.waitUntil(job);
+
+  return new Response(readable, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+}
+
+// ---------------------------------------------------------------- contenu réel du bucket
+
+/**
+ * Une page (≤ 1000 objets) du contenu réel du bucket : nombre d'objets et octets cumulés, plus la
+ * liste (clé, taille, date) si `keys=1`. L'appelant enchaîne les pages avec `cursor` : chaque appel
+ * reste court, donc loin des 10 ms de CPU du plan gratuit quelle que soit la taille du bucket.
+ */
+async function usage(request, env, url) {
+  if (!authorized(request, env)) return new Response("Unauthorized", { status: 401 });
+  const options = { limit: 1000 };
+  const cursor = url.searchParams.get("cursor");
+  const prefix = url.searchParams.get("prefix");
+  if (cursor) options.cursor = cursor;
+  if (prefix) options.prefix = prefix;
+
+  const page = await env.MEDIA.list(options);
+  let bytes = 0;
+  for (const object of page.objects) bytes += object.size;
+  const body = {
+    objects: page.objects.length,
+    bytes,
+    cursor: page.truncated ? page.cursor : null,
+  };
+  if (url.searchParams.get("keys") === "1") {
+    body.keys = page.objects.map((object) => ({
+      key: object.key,
+      size: object.size,
+      uploaded: object.uploaded instanceof Date ? object.uploaded.toISOString() : null,
+    }));
+  }
+  return Response.json(body, { headers: { "Cache-Control": "no-store" } });
 }
 
 /** Mesure : pousse un objet R2 entier vers le point de test de débit de Cloudflare. */

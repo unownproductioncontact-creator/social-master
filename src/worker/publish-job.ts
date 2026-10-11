@@ -2,7 +2,8 @@ import "server-only";
 import type { JobWithMetadata } from "pg-boss";
 import { db } from "@/lib/db";
 import { decryptToken, encryptToken } from "@/lib/crypto";
-import { getPublicMediaUrl, mediaWorkerEnabled } from "@/lib/storage";
+import { getPublicMediaUrl, mediaWorkerEnabled, mediaWorkerPushConfig } from "@/lib/storage";
+import { mediaUrlDelivery, tiktokVideoDelivery, youtubeDelivery, type DeliveryPath } from "@/lib/delivery-path";
 import { ensureJpegVersion } from "@/lib/image-convert";
 import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
 import { recomputePostStatus } from "@/lib/post-status";
@@ -42,7 +43,7 @@ export function composeCaption(target: {
 export async function afterTargetDelivered(
   target: { id: string; platform: string; postId: string; post: { userId: string } },
   caption: string,
-  extraDetail: { tiktokReception?: TikTokReception } = {}
+  extraDetail: { tiktokReception?: TikTokReception; delivery?: DeliveryPath } = {}
 ): Promise<void> {
   // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
   // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
@@ -103,6 +104,8 @@ async function processTarget(postTargetId: string): Promise<void> {
       ? await freshTikTokAccessToken(target.socialAccount)
       : decryptToken(target.socialAccount.accessTokenEnc);
   const caption = composeCaption(target);
+  /** Par où est passé le fichier — journalisé avec la livraison, relu par get_post (§36). */
+  let delivery: DeliveryPath | undefined;
 
   if (target.platform === "INSTAGRAM") {
     const quota = await getContentPublishingLimit(target.socialAccount.platformAccountId, accessToken);
@@ -163,6 +166,8 @@ async function processTarget(postTargetId: string): Promise<void> {
         errorMessage: null,
       },
     });
+    // Meta a téléchargé le fichier à l'URL de `getPublicMediaUrl` : Worker si configuré, sinon /api/m/.
+    delivery = mediaUrlDelivery(mediaWorkerEnabled());
   } else if (target.platform === "YOUTUBE") {
     // Refresh du token AVANT chaque publication : l'access token Google dure ~1h et le cron quotidien
     // ne touche PAS aux comptes YouTube (V1, CLAUDE.md §25). Google ne fait pas tourner le refresh token,
@@ -189,6 +194,8 @@ async function processTarget(postTargetId: string): Promise<void> {
     const media = orderedMedia[0];
     const titleOverride = (target.platformOptions as { title?: string } | null)?.title;
     const title = resolveYouTubeTitle(titleOverride, caption);
+    // Même prédicat que `publishYouTubeShort` (push par le Worker si MEDIA_PUSH_SECRET est posé).
+    delivery = youtubeDelivery(mediaWorkerPushConfig() !== null);
     const result = await publishYouTubeShort({
       accessToken: refreshed.access_token,
       storageKey: media.storageKey,
@@ -214,6 +221,7 @@ async function processTarget(postTargetId: string): Promise<void> {
     // auditée. Un retry ne renvoie JAMAIS un média que TikTok détient déjà (publish_id persisté) : il
     // reprend seulement l'attente de livraison (CLAUDE.md §27, doublons du 30/09/2026).
     const isVideo = target.contentType !== "TIKTOK_PHOTO";
+    delivery = isVideo ? tiktokVideoDelivery(mediaWorkerEnabled()) : mediaUrlDelivery(mediaWorkerEnabled());
     let receivedBytes: number | undefined;
     await deliverTikTokDraft({
       existingPublishId: target.tiktokPublishId,
@@ -244,12 +252,12 @@ async function processTarget(postTargetId: string): Promise<void> {
       if (reception.complete === false) {
         console.error(`[publish-job] TikTok n'a reçu que ${receivedBytes}/${orderedMedia[0].sizeBytes} octets (target ${postTargetId})`);
       }
-      await afterTargetDelivered(target, caption, { tiktokReception: reception });
+      await afterTargetDelivered(target, caption, { tiktokReception: reception, delivery });
       return;
     }
   }
 
-  await afterTargetDelivered(target, caption);
+  await afterTargetDelivered(target, caption, { delivery });
 }
 
 export async function markFailure(

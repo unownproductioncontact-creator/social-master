@@ -11,8 +11,9 @@
     // Fichiers de vérification d'URL TikTok servis à la racine : { "tiktok<jeton>.txt": "<contenu>" }.
     // tiktokCAvdb… = environnement Production, tiktokTEonV… = Sandbox (vérifiés le 11/10/2026).
     "TIKTOK_VERIFICATIONS": "{\"tiktokCAvdbYxV7kUQxKi6sL93x3tLdgABzs7E.txt\":\"tiktok-developers-site-verification=CAvdbYxV7kUQxKi6sL93x3tLdgABzs7E\",\"tiktokTEonVLtxRvDlbJftJOqK90XXI0oHY8VG.txt\":\"tiktok-developers-site-verification=TEonVLtxRvDlbJftJOqK90XXI0oHY8VG\"}",
-    // Active /selftest/push (mesure de débit) ; à repasser à "0" après les essais.
-    "SELFTEST": "1"
+    // Active /selftest/push (mesure de débit, utile seulement pour re-mesurer) ; "0" en production
+    // depuis le 11/10/2026 (CLAUDE.md §36, point 6).
+    "SELFTEST": "0"
   },
   "observability": { "enabled": true }
 }

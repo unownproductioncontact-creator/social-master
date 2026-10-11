@@ -2,7 +2,14 @@ import "server-only";
 import { db } from "@/lib/db";
 import { deleteObject } from "@/lib/storage";
 import { deleteMediaAssetForUser } from "@/lib/media-delete";
-import { selectPurgeableMedia, type RetentionCandidate } from "@/lib/media-retention";
+import { objectKeysOfAsset } from "@/lib/media-keys";
+import {
+  selectPurgeableMedia,
+  selectUnusedStaleMedia,
+  UNUSED_MEDIA_MAX_AGE_DAYS,
+  type RetentionCandidate,
+} from "@/lib/media-retention";
+import { notifyTelegram } from "@/lib/telegram";
 
 /** Un MediaAsset resté UPLOADING plus longtemps que ça est considéré orphelin (PUT R2 jamais terminé). */
 const STALE_UPLOAD_THRESHOLD_MS = 60 * 60 * 1000; // 1 h
@@ -23,17 +30,19 @@ export async function runMediaCleanup(): Promise<void> {
       status: "UPLOADING",
       createdAt: { lt: new Date(Date.now() - STALE_UPLOAD_THRESHOLD_MS) },
     },
-    select: { id: true, storageKey: true },
+    select: { id: true, storageKey: true, thumbnailKey: true },
   });
 
   let purgedCount = 0;
   for (const asset of staleAssets) {
-    try {
-      await deleteObject(asset.storageKey);
-    } catch (err) {
-      // Best-effort : l'objet n'existe probablement pas (PUT jamais terminé). On journalise pour
-      // garder une trace en cas de vrai problème R2, mais on continue le nettoyage DB dans tous les cas.
-      console.warn(`[media-cleanup] suppression R2 échouée pour ${asset.storageKey} (ignorée)`, err);
+    for (const key of objectKeysOfAsset(asset)) {
+      try {
+        await deleteObject(key);
+      } catch (err) {
+        // Best-effort : l'objet n'existe probablement pas (PUT jamais terminé). On journalise pour
+        // garder une trace en cas de vrai problème R2, mais on continue le nettoyage DB dans tous les cas.
+        console.warn(`[media-cleanup] suppression R2 échouée pour ${key} (ignorée)`, err);
+      }
     }
 
     await db.mediaAsset.delete({ where: { id: asset.id } }).catch((err) => {
@@ -48,6 +57,65 @@ export async function runMediaCleanup(): Promise<void> {
 
   // Deuxième passe : rétention automatique optionnelle des médias déjà publiés (voir CLAUDE.md §15bis).
   await runRetentionPurge();
+
+  // Troisième passe : médias jamais utilisés dans un post depuis plus de 30 jours (CLAUDE.md §36).
+  await runUnusedMediaPurge();
+}
+
+/**
+ * Supprime les médias que AUCUN post n'utilise et qui ont été ajoutés il y a plus de
+ * `UNUSED_MEDIA_MAX_AGE_DAYS` jours (essais, doublons, envois oubliés — demande du user, 11/10/2026).
+ * Un brouillon suffit à protéger un média. Comme `runRetentionPurge`, sans lien avec le réglage de
+ * rétention du user. Requêtes séquentielles (cf. §15/§18) ; un échec n'interrompt pas la boucle.
+ */
+async function runUnusedMediaPurge(): Promise<void> {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - UNUSED_MEDIA_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
+
+  const assets = await db.mediaAsset.findMany({
+    where: { status: "READY", createdAt: { lt: cutoff }, postMedia: { none: {} } },
+    select: { id: true, userId: true, sizeBytes: true, createdAt: true, _count: { select: { postMedia: true } } },
+  });
+  const purgeable = new Set(
+    selectUnusedStaleMedia(
+      assets.map((a) => ({ id: a.id, createdAt: a.createdAt, postCount: a._count.postMedia })),
+      now
+    )
+  );
+
+  let deleted = 0;
+  let bytes = 0;
+  for (const asset of assets) {
+    if (!purgeable.has(asset.id)) continue;
+    try {
+      // Re-vérification juste avant : un brouillon a pu s'en emparer depuis la requête ci-dessus, et
+      // `deleteMediaAssetForUser` supprimerait ce brouillon avec le média.
+      const fresh = await db.mediaAsset.findUnique({
+        where: { id: asset.id },
+        select: { _count: { select: { postMedia: true } } },
+      });
+      if (!fresh || fresh._count.postMedia > 0) continue;
+
+      const result = await deleteMediaAssetForUser(asset.userId, asset.id);
+      if (result.error) {
+        console.warn(`[media-cleanup] médias inutilisés : suppression de ${asset.id} refusée : ${result.error}`);
+        continue;
+      }
+      deleted++;
+      bytes += asset.sizeBytes;
+    } catch (err) {
+      console.error(`[media-cleanup] médias inutilisés : exception sur ${asset.id}`, err);
+    }
+  }
+
+  console.log(`[media-cleanup] médias jamais utilisés : ${deleted} supprimé(s)`);
+  if (deleted > 0) {
+    await notifyTelegram(
+      `🧹 ${deleted} média${deleted > 1 ? "s" : ""} jamais utilisé${deleted > 1 ? "s" : ""} depuis plus de ` +
+        `${UNUSED_MEDIA_MAX_AGE_DAYS} jours supprimé${deleted > 1 ? "s" : ""} de la médiathèque ` +
+        `(${(bytes / (1024 * 1024)).toFixed(1)} Mo libérés).`
+    );
+  }
 }
 
 /**

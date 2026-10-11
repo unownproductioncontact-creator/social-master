@@ -8,6 +8,7 @@ import {
   STORAGE_CHECK_QUEUE,
   MEDIA_CLEANUP_QUEUE,
   MEDIA_IMPORT_QUEUE,
+  ORPHAN_SWEEP_QUEUE,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
@@ -15,6 +16,7 @@ import { runTokenRefresh } from "@/worker/token-refresh-job";
 import { runStorageCheck } from "@/worker/storage-check-job";
 import { runMediaCleanup } from "@/worker/media-cleanup-job";
 import { runMediaImport } from "@/worker/media-import-job";
+import { runOrphanSweep } from "@/worker/orphan-sweep-job";
 
 let started = false;
 
@@ -44,6 +46,10 @@ export async function startWorker(): Promise<void> {
   await boss.createQueue(MEDIA_CLEANUP_QUEUE, { retryLimit: 1 });
   await boss.schedule(MEDIA_CLEANUP_QUEUE, "0 6 * * *", {}, { tz: "UTC" }); // tous les jours à 6h UTC
 
+  // Balayage mensuel des objets R2 orphelins (CLAUDE.md §36) : le 1er de chaque mois à 7h UTC.
+  await boss.createQueue(ORPHAN_SWEEP_QUEUE, { retryLimit: 1 });
+  await boss.schedule(ORPHAN_SWEEP_QUEUE, "0 7 1 * *", {}, { tz: "UTC" });
+
   // Import de médias par lien (connecteur Claude, CLAUDE.md §30) : 1 nouvelle tentative sur erreur
   // réseau, délai max 30 min (gros fichiers).
   await boss.createQueue(MEDIA_IMPORT_QUEUE, { retryLimit: 1, retryDelay: 30, expireInSeconds: 1800 });
@@ -70,6 +76,10 @@ export async function startWorker(): Promise<void> {
     await runMediaCleanup();
   });
 
+  await boss.work(ORPHAN_SWEEP_QUEUE, async () => {
+    await runOrphanSweep();
+  });
+
   await boss.work(
     MEDIA_IMPORT_QUEUE,
     { batchSize: 1, includeMetadata: true },
@@ -79,6 +89,6 @@ export async function startWorker(): Promise<void> {
   );
 
   console.log(
-    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, media-import)"
+    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import)"
   );
 }

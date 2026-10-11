@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { deleteObject } from "@/lib/storage";
+import { objectKeysOfAsset } from "@/lib/media-keys";
 import { unschedulePost } from "@/lib/scheduler";
 
 /**
@@ -51,10 +52,12 @@ export async function deleteMediaAssetForUser(
 
   // Base d'abord (la cascade MediaAsset→PostMedia détache les posts conservés), R2 ensuite en
   // best-effort : un objet R2 déjà absent ou une panne réseau ne doit pas laisser un média
-  // « fantôme » en base. On supprime aussi la miniature (thumbnailKey), sinon elle fuiterait dans R2.
+  // « fantôme » en base. On supprime TOUT ce que le média a fait naître : l'original, sa miniature et
+  // la copie JPEG d'Instagram (`.converted.jpg`, créée à la volée par une publication et jamais
+  // supprimée avant le 11/10/2026, CLAUDE.md §36). Les clés dérivées sont déterministes (media-keys.ts) :
+  // supprimer une clé absente est sans effet.
   await db.mediaAsset.delete({ where: { id: mediaAssetId } });
-  for (const key of [asset.storageKey, asset.thumbnailKey]) {
-    if (!key) continue;
+  for (const key of objectKeysOfAsset(asset)) {
     try {
       await deleteObject(key);
     } catch (err) {

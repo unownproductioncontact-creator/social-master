@@ -50,3 +50,42 @@ export function selectPurgeableMedia(
     )
     .map((a) => a.id);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Médias JAMAIS utilisés (CLAUDE.md §36, point 5 — demande du user, délai de 30 jours confirmé le
+// 11/10/2026). Distinct de la rétention ci-dessus (médias déjà PUBLIÉS, réglable par le user) : ici,
+// un fichier envoyé ou importé mais rattaché à AUCUN post — un essai, un doublon, un envoi oublié.
+// ---------------------------------------------------------------------------------------------
+
+export const UNUSED_MEDIA_MAX_AGE_DAYS = 30;
+
+export type UnusedMediaCandidate = {
+  id: string;
+  createdAt: Date;
+  /** Nombre de posts (brouillon, programmé, publié…) qui utilisent ce média. */
+  postCount: number;
+};
+
+/**
+ * Identifiants des médias à supprimer : AUCUN post ne les utilise (un brouillon suffit à les protéger)
+ * et ils ont été ajoutés il y a STRICTEMENT plus de `maxAgeDays` jours. Frontière stricte comme
+ * `selectPurgeableMedia` : exactement à la limite, on garde. Un délai non fini ou ≤ 0 ne supprime rien.
+ */
+export function selectUnusedStaleMedia(
+  assets: UnusedMediaCandidate[],
+  now: Date,
+  maxAgeDays: number = UNUSED_MEDIA_MAX_AGE_DAYS
+): string[] {
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) return [];
+  const cutoffMs = now.getTime() - maxAgeDays * MS_PER_DAY;
+  return assets.filter((a) => a.postCount === 0 && a.createdAt.getTime() < cutoffMs).map((a) => a.id);
+}
+
+/**
+ * Jours restants avant la suppression automatique d'un média non utilisé (0 = au prochain passage).
+ * Sert à l'affichage dans la médiathèque ; ne fait pas foi pour la suppression elle-même.
+ */
+export function daysBeforeUnusedPurge(createdAt: Date, now: Date, maxAgeDays: number = UNUSED_MEDIA_MAX_AGE_DAYS): number {
+  const remainingMs = createdAt.getTime() + maxAgeDays * MS_PER_DAY - now.getTime();
+  return Math.max(0, Math.ceil(remainingMs / MS_PER_DAY));
+}

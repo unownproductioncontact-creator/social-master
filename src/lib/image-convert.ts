@@ -1,10 +1,7 @@
 import "server-only";
 import sharp from "sharp";
 import { getObjectBuffer, putObjectBuffer, objectExists } from "@/lib/storage";
-
-function jpegKeyFor(storageKey: string): string {
-  return `${storageKey}.converted.jpg`;
-}
+import { convertedJpegKey } from "@/lib/media-keys";
 
 /**
  * S'assure qu'une version JPEG de ce média existe sur R2 (Instagram n'accepte que le JPEG pour les
@@ -14,7 +11,7 @@ function jpegKeyFor(storageKey: string): string {
 export async function ensureJpegVersion(storageKey: string, mimeType: string): Promise<string> {
   if (mimeType === "image/jpeg") return storageKey;
 
-  const convertedKey = jpegKeyFor(storageKey);
+  const convertedKey = convertedJpegKey(storageKey);
   if (await objectExists(convertedKey)) return convertedKey;
 
   const original = await getObjectBuffer(storageKey);

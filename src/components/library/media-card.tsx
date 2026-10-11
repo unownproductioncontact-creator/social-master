@@ -31,6 +31,8 @@ export type MediaCardData = {
   mediaUrl: string;
   thumbnailUrl: string | null;
   inUseCount: number;
+  /** Jours avant la suppression automatique d'un média jamais utilisé (null = utilisé, donc conservé). */
+  purgeInDays: number | null;
 };
 
 /** Un diagnostic de compatibilité enrichi de la plateforme concernée (pour l'affichage du popover). */
@@ -185,6 +187,16 @@ export function MediaCard({
             <StatusBadge tone="muted">
               Utilisé · {asset.inUseCount} post{asset.inUseCount > 1 ? "s" : ""}
             </StatusBadge>
+          )}
+
+          {asset.inUseCount === 0 && asset.purgeInDays != null && (
+            // Un média jamais utilisé est supprimé tout seul 30 jours après son ajout (CLAUDE.md §36) :
+            // on le dit. Libellé court (la carte est étroite sur mobile), détail en infobulle.
+            <span title="Média jamais utilisé dans un post : supprimé automatiquement 30 jours après son ajout.">
+              <StatusBadge tone={asset.purgeInDays <= 7 ? "warn" : "muted"}>
+                {asset.purgeInDays === 0 ? "Supprimé bientôt" : `Supprimé dans ${asset.purgeInDays} j`}
+              </StatusBadge>
+            </span>
           )}
         </div>
 

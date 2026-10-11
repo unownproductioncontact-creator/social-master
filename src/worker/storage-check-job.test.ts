@@ -26,4 +26,13 @@ describe("evaluateStorageAlert", () => {
     expect(result.message).toContain("médiathèque");
     expect(result.message).toMatch(/0,015/);
   });
+
+  it("avec une mesure du bucket, le message dit combien d'objets et ce que les médias connus n'expliquent pas", () => {
+    const result = evaluateStorageAlert(R2_FREE_TIER_BYTES * 0.8, { objects: 42, knownMediaBytes: R2_FREE_TIER_BYTES * 0.5 });
+    expect(result.message).toContain("80 %");
+    expect(result.message).toContain("42 objets");
+    expect(result.message).toContain("5.0 Go de médias connus");
+    // Le texte historique reste : action possible et coût du dépassement.
+    expect(result.message).toMatch(/0,015/);
+  });
 });

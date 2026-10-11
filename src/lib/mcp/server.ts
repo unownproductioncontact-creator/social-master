@@ -19,6 +19,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { freshTikTokAccessToken, type TikTokAccountTokens } from "@/lib/tiktok-token";
 import { fetchTikTokPublishStatus } from "@/lib/providers/tiktok";
 import { tiktokReception } from "@/lib/tiktok-draft";
+import { describeDelivery, readDelivery, type DeliveryPath } from "@/lib/delivery-path";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -233,7 +234,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Détail d'une publication",
       description:
-        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes).",
+        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes). Pour une cible publiée : delivered_via = « worker » (Worker Cloudflare, sortie gratuite) ou « render » (sortie facturée au-delà de 5 Go/mois), absent pour les publications faites avant la mise en place de ce suivi.",
       inputSchema: { post_id: z.string().min(1) },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -261,6 +262,22 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
             ] as const)
         )
       );
+      // Par où est passé le fichier de chaque livraison (journal d'activité, §36) — le plus récent gagne.
+      const deliveryLogs = await db.activityLog.findMany({
+        where: {
+          userId,
+          entityType: "PostTarget",
+          entityId: { in: post.postTargets.map((t) => t.id) },
+          action: { endsWith: "_published" },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { entityId: true, detail: true },
+      });
+      const deliveries = new Map<string, DeliveryPath>();
+      for (const log of deliveryLogs) {
+        const delivery = readDelivery(log.detail);
+        if (delivery && !deliveries.has(log.entityId)) deliveries.set(log.entityId, delivery);
+      }
       return ok({
         post_id: post.id,
         status: post.status,
@@ -285,6 +302,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           instagram_collaborators: t.platform === "INSTAGRAM" ? collaboratorsFromOptions(t.platformOptions) : undefined,
           instagram_trial_reel: t.platform === "INSTAGRAM" ? trialChoice(trialFromOptions(t.platformOptions)) : undefined,
           tiktok_reception: receptions.get(t.id),
+          delivered_via: deliveries.get(t.id)?.via,
+          delivery: deliveries.has(t.id) ? describeDelivery(deliveries.get(t.id)!) : undefined,
         })),
         created_at: fmt(post.createdAt),
         updated_at: fmt(post.updatedAt),

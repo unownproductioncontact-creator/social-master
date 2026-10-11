@@ -70,6 +70,10 @@ export function MediaRetentionForm({ mediaRetentionDays }: { mediaRetentionDays:
         délai choisi. Seuls les médias dont <span className="font-medium text-foreground">toutes</span> les
         publications sont parties sont concernés — l’historique et les liens vers les posts restent intacts.
       </p>
+      <p className="text-[12px] text-muted-foreground">
+        Indépendamment de ce réglage, un média <span className="font-medium text-foreground">jamais utilisé</span>{" "}
+        dans un post (même en brouillon) est supprimé automatiquement 30 jours après son ajout.
+      </p>
       <Button onClick={handleSave} disabled={isPending}>
         {isPending ? "Enregistrement…" : "Enregistrer"}
       </Button>
