@@ -4,7 +4,8 @@ import { notifyTelegram } from "@/lib/telegram";
 
 /** Palier gratuit Cloudflare R2 (stockage à l'instant T, pas un quota mensuel). */
 export const R2_FREE_TIER_BYTES = 10 * 1024 ** 3;
-const ALERT_THRESHOLD_RATIO = 0.8;
+// Seuil choisi par le user le 11/10/2026 (alerte Telegram quotidienne au-delà).
+const ALERT_THRESHOLD_RATIO = 0.7;
 
 function formatGb(bytes: number): string {
   return (bytes / 1024 ** 3).toFixed(1);
@@ -24,8 +25,8 @@ export function evaluateStorageAlert(usedBytes: number): { shouldAlert: boolean;
 }
 
 /**
- * Filet de sécurité pour le stockage R2 (aucune suppression automatique après publication —
- * voir CLAUDE.md). Somme les médias `READY` en base (déjà connue, pas d'appel R2/ListObjects
+ * Filet de sécurité pour le stockage R2 (la purge après publication est optionnelle — voir CLAUDE.md
+ * §26 et §36). Somme les médias `READY` en base (déjà connue, pas d'appel R2/ListObjects
  * nécessaire) plutôt que d'interroger R2 directement. Exécuté 1×/jour (comme le refresh de
  * tokens) : la variation de ce chiffre est lente, un contrôle quotidien est largement suffisant.
  */
