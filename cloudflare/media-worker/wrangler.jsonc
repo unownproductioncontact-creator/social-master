@@ -9,7 +9,8 @@
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "social-master" }],
   "vars": {
     // Fichiers de vérification d'URL TikTok servis à la racine : { "tiktok<jeton>.txt": "<contenu>" }.
-    "TIKTOK_VERIFICATIONS": "{}",
+    // tiktokCAvdb… = environnement Production, tiktokTEonV… = Sandbox (vérifiés le 11/10/2026).
+    "TIKTOK_VERIFICATIONS": "{\"tiktokCAvdbYxV7kUQxKi6sL93x3tLdgABzs7E.txt\":\"tiktok-developers-site-verification=CAvdbYxV7kUQxKi6sL93x3tLdgABzs7E\",\"tiktokTEonVLtxRvDlbJftJOqK90XXI0oHY8VG.txt\":\"tiktok-developers-site-verification=TEonVLtxRvDlbJftJOqK90XXI0oHY8VG\"}",
     // Active /selftest/push (mesure de débit) ; à repasser à "0" après les essais.
     "SELFTEST": "1"
   },

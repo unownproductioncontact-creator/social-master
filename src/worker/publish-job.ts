@@ -2,13 +2,18 @@ import "server-only";
 import type { JobWithMetadata } from "pg-boss";
 import { db } from "@/lib/db";
 import { decryptToken, encryptToken } from "@/lib/crypto";
-import { getPublicMediaUrl } from "@/lib/storage";
+import { getPublicMediaUrl, mediaWorkerEnabled } from "@/lib/storage";
 import { ensureJpegVersion } from "@/lib/image-convert";
 import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
 import { recomputePostStatus } from "@/lib/post-status";
 import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
-import { startTikTokDraftVideo, startTikTokDraftPhoto, waitForTikTokInbox } from "@/lib/providers/tiktok";
+import {
+  startTikTokDraftVideo,
+  startTikTokDraftVideoFromUrl,
+  startTikTokDraftPhoto,
+  waitForTikTokInbox,
+} from "@/lib/providers/tiktok";
 import { deliverTikTokDraft, tiktokReception, type TikTokReception } from "@/lib/tiktok-draft";
 import { freshTikTokAccessToken } from "@/lib/tiktok-token";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
@@ -214,7 +219,10 @@ async function processTarget(postTargetId: string): Promise<void> {
       existingPublishId: target.tiktokPublishId,
       start: () =>
         isVideo
-          ? startTikTokDraftVideo(accessToken, orderedMedia[0].storageKey, orderedMedia[0].sizeBytes, orderedMedia[0].mimeType)
+          ? // Worker Cloudflare actif : TikTok vient chercher la vidéo (§36), sinon envoi par morceaux depuis Render.
+            mediaWorkerEnabled()
+            ? startTikTokDraftVideoFromUrl(accessToken, getPublicMediaUrl(orderedMedia[0].storageKey))
+            : startTikTokDraftVideo(accessToken, orderedMedia[0].storageKey, orderedMedia[0].sizeBytes, orderedMedia[0].mimeType)
           : startTikTokDraftPhoto(accessToken, orderedMedia.map((m) => getPublicMediaUrl(m.storageKey))),
       savePublishId: async (publishId) => {
         await db.postTarget.update({

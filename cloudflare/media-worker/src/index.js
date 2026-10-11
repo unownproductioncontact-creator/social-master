@@ -95,6 +95,9 @@ function baseHeaders(object) {
   object.writeHttpMetadata(headers);
   headers.set("ETag", object.httpEtag);
   headers.set("Accept-Ranges", "bytes");
+  // Fichiers envoyés par les utilisateurs : affichés tels quels, jamais interprétés (comme /api/m/).
+  headers.set("Content-Disposition", "inline");
+  headers.set("X-Content-Type-Options", "nosniff");
   // Lien signé et temporaire : rien à mettre en cache côté partagé.
   headers.set("Cache-Control", "private, max-age=3600");
   return headers;

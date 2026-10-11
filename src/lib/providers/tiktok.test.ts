@@ -3,7 +3,13 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 vi.mock("@/lib/storage", () => ({ getObjectStream: vi.fn(), headObject: vi.fn() }));
 
 import { getObjectStream, headObject } from "@/lib/storage";
-import { buildTikTokAuthorizeUrl, planTikTokChunks, startTikTokDraftVideo, waitForTikTokInbox } from "@/lib/providers/tiktok";
+import {
+  buildTikTokAuthorizeUrl,
+  planTikTokChunks,
+  startTikTokDraftVideo,
+  startTikTokDraftVideoFromUrl,
+  waitForTikTokInbox,
+} from "@/lib/providers/tiktok";
 import { TikTokPublishFailedError, TikTokStillProcessingError } from "@/lib/errors";
 
 describe("waitForTikTokInbox", () => {
@@ -226,5 +232,48 @@ describe("startTikTokDraftVideo", () => {
     stubR2(54_060_311);
     stubTikTok([400]);
     await expect(startTikTokDraftVideo("tok", "media/u/v.mp4", 54_060_311)).rejects.toThrow("(400)");
+  });
+});
+
+describe("startTikTokDraftVideoFromUrl (PULL_FROM_URL depuis le Worker, §36)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("init en PULL_FROM_URL avec l'URL du Worker, sans rien envoyer depuis Render", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: { publish_id: "p_pull" }, error: { code: "ok" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const id = await startTikTokDraftVideoFromUrl("tok", "https://w.example.dev/m/media/u/v.mp4?exp=1&sig=a");
+    expect(id).toBe("p_pull");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      source_info: { source: "PULL_FROM_URL", video_url: "https://w.example.dev/m/media/u/v.mp4?exp=1&sig=a" },
+    });
+    expect(vi.mocked(getObjectStream)).not.toHaveBeenCalled();
+  });
+
+  it("refus TikTok (domaine non vérifié) → erreur avec le code TikTok", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { code: "url_ownership_unverified", message: "x" } }), { status: 200 })
+      )
+    );
+    await expect(startTikTokDraftVideoFromUrl("tok", "https://w.example.dev/m/k")).rejects.toThrow(/url_ownership_unverified/);
+  });
+
+  it("le contrôle de réception lit downloaded_bytes en PULL_FROM_URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ data: { status: "SEND_TO_USER_INBOX", downloaded_bytes: 4242 }, error: { code: "ok" } }), {
+          status: 200,
+        })
+      )
+    );
+    await expect(waitForTikTokInbox("tok", "p", 1, 1000)).resolves.toEqual({ uploadedBytes: 4242 });
   });
 });

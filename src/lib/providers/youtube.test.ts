@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // est mocké), on fournit juste un Body avec transformToWebStream(). `vi.mock` est hissé au-dessus des imports.
 vi.mock("@/lib/storage", () => ({
   getObjectStream: vi.fn(async () => ({ Body: { transformToWebStream: () => new ReadableStream() } })),
+  mediaWorkerPushConfig: vi.fn(() => null),
 }));
 
 import {
@@ -14,7 +15,7 @@ import {
   publishYouTubeShort,
 } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle, youtubeTitleFallback } from "@/lib/content-type";
-import { getObjectStream } from "@/lib/storage";
+import { getObjectStream, mediaWorkerPushConfig } from "@/lib/storage";
 
 // Tests du provider YouTube avec `fetch` MOCKÉ (aucun token/réseau/R2 réel). Exercent le flux qui ne
 // pourra tourner en vrai qu'une fois GOOGLE_CLIENT_ID/SECRET posés : OAuth (URL, échange, refresh),
@@ -205,6 +206,52 @@ describe("Publication d'un Short (resumable)", () => {
     expect(put.headers["Content-Range"]).toBe("bytes 0-999/1000");
     expect(put.headers["Content-Length"]).toBe("1000");
     expect(vi.mocked(getObjectStream)).toHaveBeenCalledWith("media/u/clip.mp4");
+  });
+
+  it("Worker Cloudflare configuré : Render ouvre la session, le Worker pousse le fichier (§36)", async () => {
+    vi.mocked(mediaWorkerPushConfig).mockReturnValueOnce({ url: "https://w.example.dev", secret: "push-s" });
+    const sessionUrl = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=W";
+    mockFetch((url, init) => {
+      if (url.includes("uploadType=resumable") && init?.method === "POST" && !url.includes("upload_id")) {
+        return res({}, { headers: { location: sessionUrl } });
+      }
+      if (url === "https://w.example.dev/push") {
+        return res({ status: 200, body: JSON.stringify({ id: "vid_w" }), bytes: 1000 });
+      }
+      return res({}, { ok: false, status: 500 });
+    });
+
+    const r = await publishYouTubeShort({
+      accessToken: "at",
+      storageKey: "media/u/clip.mp4",
+      videoSizeBytes: 1000,
+      title: "t",
+      description: "d",
+      contentType: "video/mp4",
+    });
+
+    expect(r.platformPostId).toBe("vid_w");
+    const push = calls.find((c) => c.url === "https://w.example.dev/push")!;
+    expect(push.headers.Authorization).toBe("Bearer push-s");
+    const body = JSON.parse(push.body!);
+    expect(body).toMatchObject({ key: "media/u/clip.mp4", url: sessionUrl, method: "PUT" });
+    expect(body.headers["Content-Range"]).toBe("bytes 0-999/1000");
+    // Aucun PUT direct depuis Render, aucune lecture R2 côté Render.
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(vi.mocked(getObjectStream)).not.toHaveBeenCalled();
+  });
+
+  it("Worker : un refus YouTube garde le format d'erreur de l'envoi direct", async () => {
+    vi.mocked(mediaWorkerPushConfig).mockReturnValueOnce({ url: "https://w.example.dev", secret: "s" });
+    mockFetch((url) => {
+      if (url === "https://w.example.dev/push") {
+        return res({ status: 403, body: '{"error":{"errors":[{"reason":"quotaExceeded"}]}}', bytes: 10 });
+      }
+      return res({}, { headers: { location: "https://www.googleapis.com/upload/x?upload_id=1" } });
+    });
+    await expect(
+      publishYouTubeShort({ accessToken: "at", storageKey: "k", videoSizeBytes: 10, title: "t", description: "d" })
+    ).rejects.toThrow(/Envoi de la vidéo YouTube échoué \(403\).*quotaExceeded/);
   });
 
   it("tronque défensivement titre (≤100) et description (≤5000) ; MIME fallback video/*", async () => {

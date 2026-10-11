@@ -11,6 +11,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Upload } from "@aws-sdk/lib-storage";
 import type { Readable } from "node:stream";
 import { appUrl } from "@/lib/app-url";
+import { signedWorkerMediaUrl } from "@/lib/media-url";
 
 function getClient(): S3Client {
   const accountId = process.env.R2_ACCOUNT_ID;
@@ -144,7 +145,29 @@ export function buildStorageKey(userId: string, fileName: string): string {
   return `media/${userId}/${uniquePrefix}-${safeName}`;
 }
 
-/** URL publique servie par notre propre proxy (pas de domaine custom R2 disponible — voir CLAUDE.md §3). */
+/**
+ * URL publique d'un média. Avec `MEDIA_WORKER_URL` + `MEDIA_SIGNING_SECRET` : lien signé vers le
+ * Worker Cloudflare (CLAUDE.md §36), le fichier ne passe plus par Render (sortie facturée au-delà
+ * de 5 Go/mois). Sans : notre proxy `/api/m/` (comportement historique, retour arrière possible).
+ */
 export function getPublicMediaUrl(key: string): string {
+  const workerUrl = process.env.MEDIA_WORKER_URL;
+  const secret = process.env.MEDIA_SIGNING_SECRET;
+  if (workerUrl && secret) return signedWorkerMediaUrl(workerUrl, secret, key);
   return `${appUrl()}/api/m/${key}`;
+}
+
+/**
+ * Envois poussés par le Worker Cloudflare (`POST /push`, CLAUDE.md §36) : null si non configuré, et
+ * l'appelant garde alors son envoi direct depuis Render.
+ */
+export function mediaWorkerPushConfig(): { url: string; secret: string } | null {
+  const url = process.env.MEDIA_WORKER_URL;
+  const secret = process.env.MEDIA_PUSH_SECRET;
+  return url && secret ? { url: url.replace(/\/+$/, ""), secret } : null;
+}
+
+/** Vrai quand les médias sont servis par le Worker Cloudflare. */
+export function mediaWorkerEnabled(): boolean {
+  return Boolean(process.env.MEDIA_WORKER_URL && process.env.MEDIA_SIGNING_SECRET);
 }

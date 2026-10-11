@@ -292,7 +292,10 @@ export type TikTokPublishStatus =
 export type TikTokPublishState = {
   status: TikTokPublishStatus | null;
   failReason?: string;
-  /** Octets reçus par TikTok pour un FILE_UPLOAD (`uploaded_bytes`) — contrôle d'intégrité de l'envoi. */
+  /**
+   * Octets reçus par TikTok — `uploaded_bytes` (FILE_UPLOAD) ou `downloaded_bytes` (PULL_FROM_URL) —
+   * contrôle d'intégrité de l'envoi.
+   */
   uploadedBytes?: number;
 };
 
@@ -320,10 +323,17 @@ export async function fetchTikTokPublishStatus(
     throw new Error(`Lecture du statut TikTok refusée : ${json.error.code} — ${json.error.message}`);
   }
   const uploaded = json.data?.uploaded_bytes;
+  const downloaded = json.data?.downloaded_bytes;
+  const received =
+    typeof uploaded === "number" && uploaded > 0
+      ? uploaded
+      : typeof downloaded === "number" && downloaded > 0
+        ? downloaded
+        : undefined;
   return {
     status: json.data?.status ?? null,
     failReason: json.data?.fail_reason,
-    uploadedBytes: typeof uploaded === "number" && uploaded > 0 ? uploaded : undefined,
+    uploadedBytes: received,
   };
 }
 
@@ -348,6 +358,33 @@ export async function startTikTokDraftVideo(
   const { publish_id, upload_url } = await initInboxVideoUpload(accessToken, totalSize, plan.chunkSize, plan.ranges.length);
   await uploadVideoToTikTok(upload_url, storageKey, totalSize, plan, mimeType);
   return publish_id;
+}
+
+/**
+ * Démarre un brouillon vidéo TikTok (inbox) en PULL_FROM_URL : TikTok télécharge lui-même la vidéo
+ * depuis le Worker Cloudflare (CLAUDE.md §36), rien ne sort de Render. L'URL doit appartenir à un
+ * préfixe vérifié dans les « URL properties » de l'environnement TikTok utilisé (Sandbox ou
+ * Production). Dès l'init acceptée, TikTok détient l'envoi : le publish_id est à conserver (pas de
+ * renvoi, cf. §27), comme pour les photos.
+ */
+export async function startTikTokDraftVideoFromUrl(accessToken: string, videoUrl: string): Promise<string> {
+  const res = await fetch(INBOX_VIDEO_INIT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify({ source_info: { source: "PULL_FROM_URL", video_url: videoUrl } }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Initialisation upload TikTok échouée (${res.status}): ${text}`);
+  }
+  const json = await res.json();
+  if (json.error?.code && json.error.code !== "ok") {
+    throw new Error(`Initialisation upload TikTok refusée : ${json.error.code} — ${json.error.message}`);
+  }
+  return (json.data as { publish_id: string }).publish_id;
 }
 
 /**

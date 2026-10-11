@@ -1,5 +1,5 @@
 import "server-only";
-import { getObjectStream } from "@/lib/storage";
+import { getObjectStream, mediaWorkerPushConfig } from "@/lib/storage";
 import { appUrl } from "@/lib/app-url";
 import { YOUTUBE_TITLE_MAX_LENGTH } from "@/lib/content-type";
 
@@ -246,6 +246,54 @@ async function uploadVideoBinary(sessionUrl: string, params: PublishYouTubeShort
   return { id: String(json.id) };
 }
 
+function parseVideoResource(status: number, text: string): VideoResource {
+  if (status < 200 || status >= 300) {
+    throw new Error(`Envoi de la vidéo YouTube échoué (${status}): ${text}`);
+  }
+  let json: { id?: unknown };
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Réponse YouTube d'upload illisible : ${text.slice(0, 500)}`);
+  }
+  if (!json.id) throw new Error(`Réponse YouTube d'upload sans id de vidéo : ${text.slice(0, 500)}`);
+  return { id: String(json.id) };
+}
+
+/**
+ * Variante de l'étape 2/2 par le Worker Cloudflare (CLAUDE.md §36) : il lit l'objet dans R2 et le
+ * PUT lui-même vers l'URL de session (qui n'exige pas d'en-tête d'autorisation), sa sortie de données
+ * est gratuite alors que celle de Render est facturée. Même format d'erreur que l'envoi direct, pour
+ * que `classifyYouTubeError` s'applique à l'identique.
+ */
+async function uploadVideoViaWorker(
+  sessionUrl: string,
+  params: PublishYouTubeShortParams,
+  worker: { url: string; secret: string }
+): Promise<VideoResource> {
+  const res = await fetch(`${worker.url}/push`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${worker.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: params.storageKey,
+      url: sessionUrl,
+      method: "PUT",
+      headers: {
+        "Content-Type": params.contentType || UPLOAD_CONTENT_TYPE_FALLBACK,
+        "Content-Range": `bytes 0-${params.videoSizeBytes - 1}/${params.videoSizeBytes}`,
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Worker Cloudflare : envoi YouTube impossible (${res.status}): ${await res.text()}`);
+  }
+  const result = (await res.json()) as { status: number; body: string; bytes: number };
+  if (result.bytes !== params.videoSizeBytes) {
+    throw new Error(`Taille de la vidéo incohérente (${result.bytes} octets lus dans R2, ${params.videoSizeBytes} attendus).`);
+  }
+  return parseVideoResource(result.status, result.body);
+}
+
 /**
  * Orchestre la publication complète : init resumable → upload streamé → id de la vidéo. Retourne l'id
  * et l'URL publique du Short. Le refresh du token (access ~1h) est fait PAR L'APPELANT juste avant.
@@ -254,7 +302,10 @@ export async function publishYouTubeShort(
   params: PublishYouTubeShortParams
 ): Promise<{ platformPostId: string; platformPostUrl: string }> {
   const sessionUrl = await initResumableUpload(params);
-  const { id } = await uploadVideoBinary(sessionUrl, params);
+  const worker = mediaWorkerPushConfig();
+  const { id } = worker
+    ? await uploadVideoViaWorker(sessionUrl, params, worker)
+    : await uploadVideoBinary(sessionUrl, params);
   return {
     platformPostId: id,
     platformPostUrl: `https://www.youtube.com/shorts/${id}`,
