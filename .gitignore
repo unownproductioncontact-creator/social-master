@@ -45,3 +45,6 @@ next-env.d.ts
 
 # extension Claude bureau construite (local-mcp/build-extension.mjs)
 local-mcp/dist/
+
+# Cloudflare Worker (état local de wrangler)
+.wrangler/

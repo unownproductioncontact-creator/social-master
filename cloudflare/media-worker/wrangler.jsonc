@@ -1,0 +1,17 @@
+// Worker Cloudflare des médias de Social Master (CLAUDE.md §36).
+// Déploiement : npx wrangler deploy (depuis ce dossier). Secrets : SIGNING_SECRET, PUSH_SECRET
+// (npx wrangler secret put …), jamais dans ce fichier.
+{
+  "name": "social-master-media",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "social-master" }],
+  "vars": {
+    // Fichiers de vérification d'URL TikTok servis à la racine : { "tiktok<jeton>.txt": "<contenu>" }.
+    "TIKTOK_VERIFICATIONS": "{}",
+    // Active /selftest/push (mesure de débit) ; à repasser à "0" après les essais.
+    "SELFTEST": "1"
+  },
+  "observability": { "enabled": true }
+}
