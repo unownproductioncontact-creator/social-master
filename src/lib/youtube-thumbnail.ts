@@ -129,6 +129,23 @@ export function classifyThumbnailError(err: unknown, opts: { justUploaded?: bool
     };
   }
   if (status === 403) {
+    // La doc liste DEUX refus 403 « forbidden », distingués seulement par leur message.
+    if (/doesn.t have permissions to upload and set custom video thumbnails/i.test(google.message ?? text)) {
+      return {
+        retryable: false,
+        code: "yt_thumb_not_allowed",
+        message:
+          "YouTube refuse (403) : ce compte n'a pas le droit de poser des miniatures personnalisées — chaîne non vérifiée (vérification par téléphone sur youtube.com/verify) ou, pour un Short, fonction pas encore ouverte à la chaîne (réservée au Programme Partenaire YouTube).",
+      };
+    }
+    if (/can.t be set for the specified video/i.test(google.message ?? text)) {
+      return {
+        retryable: false,
+        code: "yt_thumb_forbidden_video",
+        message:
+          "YouTube refuse la miniature pour CETTE vidéo (403 « The thumbnail can't be set for the specified video ») — pour un Short, YouTube n'accepte peut-être pas (encore) la miniature personnalisée par l'API, ou pas pour cette chaîne.",
+      };
+    }
     return {
       retryable: false,
       code: "yt_thumb_forbidden",
@@ -152,6 +169,22 @@ export function classifyThumbnailError(err: unknown, opts: { justUploaded?: bool
     return { retryable: true, code: "yt_thumb_server_error", message: `Erreur serveur YouTube${status ? ` (${status})` : ""}.` };
   }
   return { retryable: true, code: "yt_thumb_unknown", message: "Erreur inattendue pendant l'envoi de la miniature." };
+}
+
+/**
+ * Réponse brute de YouTube résumée pour l'affichage (get_post) : « 403 forbidden — <message Google> ».
+ * Sert au diagnostic ; jamais de jeton dans ces corps d'erreur (Google n'y renvoie que code/raison/texte).
+ */
+export function summarizeApiError(rawError: string): string | undefined {
+  if (!rawError) return undefined;
+  const google = extractGoogleError(rawError);
+  const httpMatch = rawError.match(/\((\d{3})\)/);
+  const status = google.code ?? (httpMatch ? Number(httpMatch[1]) : null);
+  if (google.message || google.reason || google.oauthError) {
+    const head = [status, google.reason ?? google.oauthError].filter(Boolean).join(" ");
+    return google.message ? `${head} — ${google.message}` : head;
+  }
+  return rawError.slice(0, 300);
 }
 
 /** Message tant qu'un nouvel essai est programmé (heure locale de l'utilisateur). */

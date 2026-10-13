@@ -376,7 +376,8 @@ describe("Miniature personnalisée et lecture de la vidéo (§37)", () => {
     const err = await setYouTubeThumbnail("at", "vid_1", { data: Buffer.from([1]), contentType: "image/png" }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/^Miniature YouTube refusée \(403\): /);
-    expect(classifyThumbnailError(err).code).toBe("yt_thumb_forbidden");
+    // Message « doesn't have permissions… » → refus propre au compte (§37).
+    expect(classifyThumbnailError(err).code).toBe("yt_thumb_not_allowed");
   });
 
   it("videos.list part=snippet,status : visibilité + miniatures servies ; null si la vidéo n'existe plus", async () => {

@@ -6,6 +6,7 @@ import {
   needsThumbnailRecompression,
   pendingRetryMessage,
   readThumbnailUrls,
+  summarizeApiError,
   ThumbnailImageError,
   YOUTUBE_THUMBNAIL_MAX_BYTES,
 } from "@/lib/youtube-thumbnail";
@@ -47,6 +48,27 @@ describe("needsThumbnailRecompression", () => {
 });
 
 describe("classifyThumbnailError", () => {
+  it("403 : les deux refus documentés sont distingués par leur message", () => {
+    const notAllowed = classifyThumbnailError(
+      apiError(403, "forbidden", "The authenticated user doesn't have permissions to upload and set custom video thumbnails.")
+    );
+    expect(notAllowed).toMatchObject({ retryable: false, code: "yt_thumb_not_allowed" });
+    expect(notAllowed.message).toMatch(/youtube\.com\/verify/);
+    const thisVideo = classifyThumbnailError(
+      apiError(403, "forbidden", "The thumbnail can't be set for the specified video. The request might not be properly authorized.")
+    );
+    expect(thisVideo).toMatchObject({ retryable: false, code: "yt_thumb_forbidden_video" });
+    expect(thisVideo.message).toMatch(/CETTE vidéo/);
+  });
+  it("summarizeApiError : code, raison et message Google, sans le reste", () => {
+    expect(summarizeApiError(apiError(403, "forbidden", "The thumbnail can't be set for the specified video.").message)).toBe(
+      "403 forbidden — The thumbnail can't be set for the specified video."
+    );
+    expect(summarizeApiError('Refresh token YouTube échoué (400): {"error":"invalid_grant","error_description":"Token has been expired or revoked."}')).toBe(
+      "400 invalid_grant — Token has been expired or revoked."
+    );
+    expect(summarizeApiError("")).toBeUndefined();
+  });
   it("403 forbidden : chaîne non éligible ou non vérifiée, pas de nouvel essai", () => {
     const f = classifyThumbnailError(apiError(403, "forbidden"));
     expect(f).toMatchObject({ retryable: false, code: "yt_thumb_forbidden" });

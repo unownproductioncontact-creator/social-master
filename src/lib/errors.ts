@@ -208,6 +208,8 @@ export type GoogleErrorFields = {
   reason: string | null;
   oauthError: string | null;
   status: string | null;
+  /** Message lisible de Google (`error.message` ou `error_description`), quand il existe. */
+  message?: string | null;
 };
 
 export function extractGoogleError(message: string): GoogleErrorFields {
@@ -220,17 +222,20 @@ export function extractGoogleError(message: string): GoogleErrorFields {
       const err = parsed.error;
       // Format OAuth : `error` est une chaîne (ex. "invalid_grant").
       if (typeof err === "string") {
-        return { code: null, reason: null, oauthError: err, status: null };
+        const description = (parsed as { error_description?: unknown }).error_description;
+        return { code: null, reason: null, oauthError: err, status: null, message: typeof description === "string" ? description : null };
       }
       // Format API : `error` est un objet { code, status, errors: [{ reason }] }.
       if (err && typeof err === "object") {
-        const e = err as { code?: number; status?: string; errors?: Array<{ reason?: string }> };
+        const e = err as { code?: number; status?: string; message?: string; errors?: Array<{ reason?: string; message?: string }> };
         const reason = Array.isArray(e.errors) && e.errors[0]?.reason ? String(e.errors[0].reason) : null;
+        const text = typeof e.message === "string" ? e.message : Array.isArray(e.errors) ? e.errors[0]?.message : undefined;
         return {
           code: typeof e.code === "number" ? e.code : null,
           reason,
           oauthError: null,
           status: typeof e.status === "string" ? e.status : null,
+          message: typeof text === "string" ? text : null,
         };
       }
     } catch {

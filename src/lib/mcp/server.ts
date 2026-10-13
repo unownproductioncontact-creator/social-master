@@ -25,6 +25,7 @@ import { freshYouTubeAccessToken, type YouTubeAccountTokens } from "@/lib/youtub
 import { YOUTUBE_PRIVACY_STATUSES, youtubePrivacyFromOptions } from "@/lib/youtube-options";
 import { requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
 import { coverTimeFromOptions, readCoverResult, type CoverResult } from "@/lib/instagram-cover";
+import { summarizeApiError } from "@/lib/youtube-thumbnail";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -310,6 +311,23 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         orderBy: { createdAt: "desc" },
         select: { entityId: true, detail: true },
       });
+      // Dernière réponse brute de YouTube pour une miniature en échec ou en attente (diagnostic).
+      const thumbnailLogs = await db.activityLog.findMany({
+        where: {
+          userId,
+          entityType: "PostTarget",
+          entityId: { in: post.postTargets.filter((t) => t.platform === "YOUTUBE").map((t) => t.id) },
+          action: { in: ["youtube_thumbnail_failed", "youtube_thumbnail_retry_scheduled", "youtube_thumbnail_set"] },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { entityId: true, action: true, detail: true },
+      });
+      const thumbnailApiErrors = new Map<string, string | undefined>();
+      for (const log of thumbnailLogs) {
+        if (thumbnailApiErrors.has(log.entityId)) continue;
+        const raw = (log.detail as { rawError?: unknown } | null)?.rawError;
+        thumbnailApiErrors.set(log.entityId, log.action === "youtube_thumbnail_set" || typeof raw !== "string" ? undefined : summarizeApiError(raw));
+      }
       const deliveries = new Map<string, DeliveryPath>();
       const covers = new Map<string, CoverResult>();
       for (const log of deliveryLogs) {
@@ -358,6 +376,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                   name: t.coverMedia ? mediaName(t.coverMedia.storageKey) : undefined,
                   status: t.thumbnailStatus ?? "PENDING",
                   error: t.thumbnailError ?? undefined,
+                  api_error: t.thumbnailStatus !== "SET" ? thumbnailApiErrors.get(t.id) : undefined,
                   set_at: fmt(t.thumbnailSetAt) ?? undefined,
                 }
               : undefined,
