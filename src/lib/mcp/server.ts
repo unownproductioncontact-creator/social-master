@@ -20,6 +20,11 @@ import { freshTikTokAccessToken, type TikTokAccountTokens } from "@/lib/tiktok-t
 import { fetchTikTokPublishStatus } from "@/lib/providers/tiktok";
 import { tiktokReception } from "@/lib/tiktok-draft";
 import { describeDelivery, readDelivery, type DeliveryPath } from "@/lib/delivery-path";
+import { fetchYouTubeVideoSummary } from "@/lib/providers/youtube";
+import { freshYouTubeAccessToken, type YouTubeAccountTokens } from "@/lib/youtube-token";
+import { YOUTUBE_PRIVACY_STATUSES, youtubePrivacyFromOptions } from "@/lib/youtube-options";
+import { requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
+import { coverTimeFromOptions, readCoverResult, type CoverResult } from "@/lib/instagram-cover";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -35,7 +40,8 @@ function instructions(app: string): string {
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
-- Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende, réel d'essai éventuel) et attends sa confirmation.`;
+- Miniature d'un Short YouTube : une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master juste après la mise en ligne ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée. Son état est dans get_post (youtube_thumbnail) et ne fait jamais échouer la vidéo. Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
+- Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel) et attends sa confirmation.`;
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
@@ -64,6 +70,29 @@ async function readTikTokReception(account: TikTokAccountTokens, publishId: stri
   } catch (err) {
     return { error: `Statut TikTok illisible pour l'instant : ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/**
+ * Ce que YouTube affiche EN DIRECT pour une vidéo publiée (videos.list, 1 unité de quota) : visibilité,
+ * état de l'envoi et URLs des miniatures servies — pour vérifier qu'une miniature personnalisée a pris.
+ * Jamais bloquant : erreur lisible si YouTube ne répond pas.
+ */
+async function readYouTubeLive(account: YouTubeAccountTokens, videoId: string) {
+  try {
+    const token = await freshYouTubeAccessToken(account);
+    const video = await fetchYouTubeVideoSummary(token, videoId, AbortSignal.timeout(5000));
+    if (!video) return { error: "Vidéo introuvable sur YouTube (supprimée ?)." };
+    return { privacy_status: video.privacyStatus, upload_status: video.uploadStatus, thumbnails: video.thumbnails };
+  } catch (err) {
+    return { error: `Lecture YouTube impossible pour l'instant : ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/** Phrase lisible de la couverture réellement utilisée par un Reel publié. */
+function describeCover(result: CoverResult): string {
+  if (result.applied === "cover_url") return "image de couverture choisie (cover_url)";
+  if (result.reason === "cover_refused") return "couverture refusée par Instagram : image tirée de la vidéo";
+  return result.thumbOffsetMs != null ? `image de la vidéo à ${result.thumbOffsetMs} ms (thumb_offset)` : "image de la vidéo";
 }
 
 /** Nom lisible d'un média : dernier segment de la clé R2 sans le préfixe UUID (« uuid-nom.mp4 »). */
@@ -171,7 +200,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         },
         orderBy: { createdAt: "desc" },
         take: limit,
-        include: { _count: { select: { postMedia: true } } },
+        include: { _count: { select: { postMedia: true, coverForTargets: true } } },
       });
       return ok(
         media.map((m) => ({
@@ -184,6 +213,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           height: m.height ?? undefined,
           added_at: fmt(m.createdAt),
           used_in_posts: m._count.postMedia,
+          used_as_thumbnail: m._count.coverForTargets || undefined,
         }))
       );
     }
@@ -234,7 +264,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Détail d'une publication",
       description:
-        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes). Pour une cible publiée : delivered_via = « worker » (Worker Cloudflare, sortie gratuite) ou « render » (sortie facturée au-delà de 5 Go/mois), absent pour les publications faites avant la mise en place de ce suivi.",
+        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes). Pour une cible publiée : delivered_via = « worker » (Worker Cloudflare, sortie gratuite) ou « render » (sortie facturée au-delà de 5 Go/mois), absent pour les publications faites avant la mise en place de ce suivi. Cible YouTube : youtube_visibility, youtube_thumbnail = { media_id, status PENDING | SET | FAILED, error, set_at } (statut SÉPARÉ de la vidéo) et, une fois publiée, youtube_live = ce que YouTube affiche en direct (visibilité, URLs des miniatures servies). Cible Instagram (Reel) : instagram_cover = image de couverture choisie et ce qui a réellement été utilisé.",
       inputSchema: { post_id: z.string().min(1) },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -243,7 +273,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         where: { id: post_id, userId },
         include: {
           postMedia: { include: { mediaAsset: true }, orderBy: { position: "asc" } },
-          postTargets: { include: { socialAccount: true } },
+          postTargets: { include: { socialAccount: true, coverMedia: true } },
         },
       });
       if (!post) return fail("Post introuvable.");
@@ -262,6 +292,13 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
             ] as const)
         )
       );
+      const youtubeLive = new Map(
+        await Promise.all(
+          post.postTargets
+            .filter((t) => t.platform === "YOUTUBE" && t.status === "PUBLISHED" && t.platformPostId)
+            .map(async (t) => [t.id, await readYouTubeLive(t.socialAccount, t.platformPostId!)] as const)
+        )
+      );
       // Par où est passé le fichier de chaque livraison (journal d'activité, §36) — le plus récent gagne.
       const deliveryLogs = await db.activityLog.findMany({
         where: {
@@ -274,9 +311,12 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         select: { entityId: true, detail: true },
       });
       const deliveries = new Map<string, DeliveryPath>();
+      const covers = new Map<string, CoverResult>();
       for (const log of deliveryLogs) {
         const delivery = readDelivery(log.detail);
         if (delivery && !deliveries.has(log.entityId)) deliveries.set(log.entityId, delivery);
+        const cover = readCoverResult(log.detail);
+        if (cover && !covers.has(log.entityId)) covers.set(log.entityId, cover);
       }
       return ok({
         post_id: post.id,
@@ -301,6 +341,27 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           youtube_title: t.platform === "YOUTUBE" ? (t.platformOptions as { title?: string } | null)?.title : undefined,
           instagram_collaborators: t.platform === "INSTAGRAM" ? collaboratorsFromOptions(t.platformOptions) : undefined,
           instagram_trial_reel: t.platform === "INSTAGRAM" ? trialChoice(trialFromOptions(t.platformOptions)) : undefined,
+          instagram_cover:
+            t.platform === "INSTAGRAM" && t.contentType === "REEL" && (t.coverMediaAssetId || covers.has(t.id) || coverTimeFromOptions(t.platformOptions) != null)
+              ? {
+                  media_id: t.coverMediaAssetId ?? undefined,
+                  name: t.coverMedia ? mediaName(t.coverMedia.storageKey) : undefined,
+                  thumb_offset_ms: coverTimeFromOptions(t.platformOptions),
+                  used: covers.has(t.id) ? describeCover(covers.get(t.id)!) : undefined,
+                }
+              : undefined,
+          youtube_visibility: t.platform === "YOUTUBE" ? youtubePrivacyFromOptions(t.platformOptions) : undefined,
+          youtube_thumbnail:
+            t.platform === "YOUTUBE" && (t.coverMediaAssetId || t.thumbnailStatus)
+              ? {
+                  media_id: t.coverMediaAssetId ?? undefined,
+                  name: t.coverMedia ? mediaName(t.coverMedia.storageKey) : undefined,
+                  status: t.thumbnailStatus ?? "PENDING",
+                  error: t.thumbnailError ?? undefined,
+                  set_at: fmt(t.thumbnailSetAt) ?? undefined,
+                }
+              : undefined,
+          youtube_live: youtubeLive.get(t.id),
           tiktok_reception: receptions.get(t.id),
           delivered_via: deliveries.get(t.id)?.via,
           delivery: deliveries.has(t.id) ? describeDelivery(deliveries.get(t.id)!) : undefined,
@@ -397,11 +458,39 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         tiktok: z.boolean().default(false).describe("Envoi en brouillon dans la boîte de réception TikTok"),
         youtube: z.boolean().default(false).describe("YouTube Short (exactement 1 vidéo)"),
         youtube_title: z.string().max(100).optional().describe("Titre YouTube (sinon 1re ligne de la légende)"),
+        youtube_visibility: z
+          .enum(YOUTUBE_PRIVACY_STATUSES)
+          .optional()
+          .describe(
+            "Visibilité de la vidéo YouTube : public (défaut), unlisted (non répertoriée : visible seulement avec le lien, ni sur la chaîne ni dans la recherche) ou private. Absent en modification = inchangée"
+          ),
+        youtube_thumbnail_media_id: z
+          .string()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe(
+            "Miniature personnalisée du Short : media_id d'une IMAGE de la médiathèque (JPEG ou PNG, idéalement 1080×1920 ; recompressée en JPEG si plus de 2 Mo, jamais recadrée). Posée juste après la mise en ligne ; un échec ne fait jamais échouer la vidéo (état dans get_post). null = retirer ; absent en modification = inchangée"
+          ),
         instagram_collaborators: z
           .array(z.string())
           .max(3)
           .optional()
           .describe("Jusqu'à 3 pseudos Instagram invités en collaboration (pas en Story)"),
+        instagram_cover_media_id: z
+          .string()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe(
+            "Reel Instagram : image de couverture (media_id d'une IMAGE de la médiathèque, 9:16 conseillé), prioritaire sur instagram_thumb_offset_ms. Si Instagram la refuse, le Reel part quand même avec une image de la vidéo. null = retirer ; absent en modification = inchangée"
+          ),
+        instagram_thumb_offset_ms: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Reel Instagram : image de la vidéo à utiliser comme couverture, en millisecondes depuis le début (ex. 900)"),
         instagram_trial_reel: z
           .enum(["manual", "auto"])
           .optional()
@@ -424,9 +513,47 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         youtubeTitle: args.youtube_title ?? null,
         instagramCollaborators: args.instagram_collaborators ?? null,
         instagramTrial: args.instagram_trial_reel ? TRIAL_STRATEGY_BY_CHOICE[args.instagram_trial_reel] : null,
+        instagramCoverTimeMs: args.instagram_thumb_offset_ms ?? null,
+        // undefined (paramètre absent) = garder la valeur du brouillon ; null = retirer.
+        instagramCoverMediaId: args.instagram_cover_media_id,
+        youtubeThumbnailMediaId: args.youtube_thumbnail_media_id,
+        youtubePrivacy: args.youtube_visibility,
       });
       if (result.error || !result.postId) return fail(result.error ?? "Enregistrement impossible.");
       return ok({ post_id: result.postId, status: "DRAFT", next: "schedule_post ou publish_post_now" });
+    }
+  );
+
+  server.registerTool(
+    "set_youtube_thumbnail",
+    {
+      title: "Poser la miniature d'un Short YouTube",
+      description:
+        "Pose ou remplace la miniature personnalisée de la vidéo YouTube d'un post Social Master — notamment d'une vidéo DÉJÀ publiée (corriger d'anciens Shorts). media_id = une IMAGE de la médiathèque (envoyée avec upload_local_media ou import_media_from_url). Vidéo publiée : envoi immédiat à YouTube, résultat SET, FAILED (raison claire : chaîne non éligible ou non vérifiée, image invalide…) ou PENDING (erreur passagère : nouvel essai automatique dans 5 min, suivre avec get_post). Vidéo pas encore publiée : l'image est retenue et posée juste après la mise en ligne. Change ce que voient les spectateurs : confirmer avec l'utilisateur avant d'appeler.",
+      inputSchema: {
+        post_id: z.string().min(1),
+        media_id: z.string().min(1).describe("Image de la médiathèque (JPEG ou PNG idéalement, 1080×1920 pour un Short)"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ post_id, media_id }) => {
+      const result = await requestYouTubeThumbnailForUser(userId, post_id, media_id);
+      if (result.error || !result.outcome) return fail(result.error ?? "Miniature impossible à poser.");
+      const outcome = result.outcome;
+      if (outcome.status === "FAILED") return fail(outcome.message);
+      return ok({
+        post_id,
+        media_id,
+        video_url: result.videoUrl ?? undefined,
+        status: outcome.status === "SKIPPED" ? "PENDING" : outcome.status,
+        ...(outcome.status === "SET"
+          ? {
+              thumbnails: outcome.urls,
+              recompressed: outcome.recompressed || undefined,
+              note: "Miniature acceptée par YouTube. L'affichage peut mettre quelques minutes à se mettre à jour (cache).",
+            }
+          : { note: outcome.status === "PENDING" ? outcome.message : outcome.reason }),
+      });
     }
   );
 

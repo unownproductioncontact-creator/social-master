@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { deleteObject } from "@/lib/storage";
 import { objectKeysOfAsset } from "@/lib/media-keys";
 import { unschedulePost } from "@/lib/scheduler";
+import { thumbnailStillNeeded } from "@/lib/media-retention";
 
 /**
  * Cœur testable de la suppression d'un média AVEC cascade sur les posts qui l'utilisent.
@@ -87,24 +88,32 @@ export async function purgeMediaForPublishedPost(postId: string): Promise<void> 
       userId: true,
       user: { select: { mediaRetentionDays: true } },
       postMedia: { select: { mediaAssetId: true } },
+      postTargets: { select: { coverMediaAssetId: true } },
     },
   });
   // Seul le mode « Dès la publication » (0) déclenche la purge immédiate ; les paliers 7/30/90 restent
   // gérés par le cron quotidien, et null (Jamais) ne purge rien.
   if (!post || post.user.mediaRetentionDays !== 0) return;
 
-  const mediaIds = [...new Set(post.postMedia.map((pm) => pm.mediaAssetId))];
+  // Médias du post + images de miniature YouTube / couverture de Reel de ses cibles (§37).
+  const coverIds = post.postTargets.map((t) => t.coverMediaAssetId).filter((id): id is string => Boolean(id));
+  const mediaIds = [...new Set([...post.postMedia.map((pm) => pm.mediaAssetId), ...coverIds])];
   for (const mediaId of mediaIds) {
     try {
       const media = await db.mediaAsset.findUnique({
         where: { id: mediaId },
-        select: { status: true, postMedia: { select: { post: { select: { status: true } } } } },
+        select: {
+          status: true,
+          postMedia: { select: { post: { select: { status: true } } } },
+          coverForTargets: { select: { thumbnailStatus: true, post: { select: { status: true } } } },
+        },
       });
       if (!media || media.status !== "READY") continue;
-      const posts = media.postMedia.map((pm) => pm.post);
+      const posts = [...media.postMedia.map((pm) => pm.post), ...media.coverForTargets.map((t) => t.post)];
       // Ne purge que si TOUS les posts partageant ce média sont publiés (aucun brouillon/programmé/échec).
       const allPublished = posts.length > 0 && posts.every((p) => p.status === "PUBLISHED");
       if (!allPublished) continue;
+      if (thumbnailStillNeeded(media.coverForTargets.map((t) => t.thumbnailStatus))) continue;
 
       const result = await deleteMediaAssetForUser(post.userId, mediaId);
       if (result.error) {

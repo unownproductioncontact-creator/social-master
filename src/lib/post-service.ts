@@ -16,6 +16,12 @@ import {
   computeTikTokContentType,
   computeYouTubeContentType,
 } from "@/lib/content-type";
+import {
+  buildYouTubeOptions,
+  YOUTUBE_PRIVACY_STATUSES,
+  youtubePrivacyFromOptions,
+  type YouTubePrivacyStatus,
+} from "@/lib/youtube-options";
 
 /**
  * Logique métier des posts, SCOPÉE PAR userId (règle d'ingénierie n°10) — partagée par les server
@@ -47,6 +53,13 @@ const SavePostSchema = z.object({
   instagramCollaborators: z.array(z.string().max(64)).max(10).nullish(),
   // Réel d'essai Instagram (§34) : stratégie Meta, Reel uniquement et sans collaborateurs (validé plus bas).
   instagramTrial: z.enum(INSTAGRAM_TRIAL_STRATEGIES).nullish(),
+  // Miniature YouTube et couverture de Reel (§37) : une IMAGE de la médiathèque. Trois états :
+  // absent (undefined) = on garde celle déjà choisie sur ce brouillon (le composer web ne connaît pas
+  // ces champs : une réédition ne doit pas l'effacer) ; null = on la retire ; un id = on la pose.
+  youtubeThumbnailMediaId: z.string().min(1).nullish(),
+  instagramCoverMediaId: z.string().min(1).nullish(),
+  // Visibilité YouTube (§37) : même règle des trois états ; défaut public.
+  youtubePrivacy: z.enum(YOUTUBE_PRIVACY_STATUSES).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -135,6 +148,46 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   if (igTrial && igContentType !== "REEL") return { error: INSTAGRAM_TRIAL_REEL_ONLY_ERROR };
   if (igTrial && igCollaborators.length > 0) return { error: INSTAGRAM_TRIAL_COLLABORATORS_ERROR };
 
+  // Miniature YouTube / couverture de Reel (§37) : ce que le brouillon avait déjà (cibles non publiées,
+  // recréées plus bas) sert quand le champ est absent.
+  const previousTargets = existingPost
+    ? await db.postTarget.findMany({
+        where: { postId: existingPost.id, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
+        select: { platform: true, coverMediaAssetId: true, platformOptions: true },
+      })
+    : [];
+  const previous = (platform: Platform) => previousTargets.find((t) => t.platform === platform);
+  if (data.youtubeThumbnailMediaId && !data.targetYoutube) {
+    return { error: "Une miniature YouTube demande de cocher YouTube." };
+  }
+  const youtubeThumbnailId =
+    data.youtubeThumbnailMediaId === undefined ? (previous("YOUTUBE")?.coverMediaAssetId ?? null) : data.youtubeThumbnailMediaId;
+  const youtubePrivacy: YouTubePrivacyStatus =
+    data.youtubePrivacy === undefined
+      ? youtubePrivacyFromOptions(previous("YOUTUBE")?.platformOptions)
+      : (data.youtubePrivacy ?? "public");
+  // Une couverture n'a de sens que pour un Reel : on l'ignore (sans erreur) si le post n'en est plus un,
+  // sauf demande explicite qu'on refuse pour ne pas laisser croire qu'elle sera utilisée.
+  if (data.instagramCoverMediaId && igContentType !== "REEL") {
+    return { error: "La couverture Instagram ne s'applique qu'à un Reel (une seule vidéo, hors Story)." };
+  }
+  const instagramCoverId =
+    igContentType !== "REEL"
+      ? null
+      : data.instagramCoverMediaId === undefined
+        ? (previous("INSTAGRAM")?.coverMediaAssetId ?? null)
+        : data.instagramCoverMediaId;
+  const imageIds = [...new Set([youtubeThumbnailId, instagramCoverId].filter((id): id is string => Boolean(id)))];
+  if (imageIds.length > 0) {
+    const images = await db.mediaAsset.findMany({ where: { id: { in: imageIds }, userId } });
+    for (const id of imageIds) {
+      const image = images.find((m) => m.id === id);
+      if (!image) return { error: "Image de miniature ou de couverture introuvable dans la médiathèque." };
+      if (image.status !== "READY") return { error: "L'image de miniature ou de couverture n'est pas encore prête." };
+      if (!image.mimeType.startsWith("image/")) return { error: "La miniature ou la couverture doit être une image (JPEG de préférence)." };
+    }
+  }
+
   // ANTI-DOUBLE-PUBLICATION (P1-2) : une plateforme qui possède DÉJÀ une cible publiée/inbox sur ce
   // post est « déjà servie ». On ne doit ni supprimer cette cible (perte d'historique) ni en créer une
   // nouvelle (republication) — même si la case est encore cochée. Cas atteignable : un post
@@ -147,6 +200,9 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
       select: { platform: true },
     });
     for (const t of publishedTargets) servedPlatforms.add(t.platform);
+  }
+  if (data.youtubeThumbnailMediaId && servedPlatforms.has("YOUTUBE")) {
+    return { error: "La vidéo YouTube de ce post est déjà publiée : utilisez set_youtube_thumbnail pour changer sa miniature." };
   }
 
   const post = await db.$transaction(async (tx) => {
@@ -192,6 +248,8 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
             ...(igCollaborators.length > 0 ? { collaborators: igCollaborators } : {}),
             ...(igTrial ? { trial: igTrial } : {}),
           },
+          // Image de couverture du Reel (§37), envoyée en cover_url à la publication.
+          coverMediaAssetId: instagramCoverId,
         },
       });
     }
@@ -220,7 +278,11 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
           // Titre explicite UNIQUEMENT s'il a été saisi (contrat partagé { title?: string }). Absent →
           // le worker reconstruit le repli (1re ligne de légende via youtubeTitleFallback) ; jamais
           // stocké ici. data.youtubeTitle est déjà trimé par zod (chaîne vide = falsy → pas de titre).
-          platformOptions: data.youtubeTitle ? { title: data.youtubeTitle } : {},
+          // Visibilité écrite seulement si elle n'est pas « public » (§37).
+          platformOptions: buildYouTubeOptions(data.youtubeTitle, youtubePrivacy),
+          // Miniature personnalisée (§37) : posée juste après la mise en ligne de la vidéo.
+          coverMediaAssetId: youtubeThumbnailId,
+          thumbnailStatus: youtubeThumbnailId ? "PENDING" : null,
         },
       });
     }

@@ -2,12 +2,17 @@ import "server-only";
 import { getObjectStream, mediaWorkerPushConfig } from "@/lib/storage";
 import { appUrl } from "@/lib/app-url";
 import { YOUTUBE_TITLE_MAX_LENGTH } from "@/lib/content-type";
+import type { YouTubePrivacyStatus } from "@/lib/youtube-options";
+import { readThumbnailUrls, type ThumbnailUrls } from "@/lib/youtube-thumbnail";
 
 // Endpoints vérifiés le 11/07/2026 (docs officielles Google, cf. CLAUDE.md §25).
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels";
 const RESUMABLE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos";
+// Vérifiés le 13/10/2026 (CLAUDE.md §37) : pose de miniature (upload simple) et lecture d'une vidéo.
+const THUMBNAIL_SET_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set";
+const VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos";
 
 const YOUTUBE_DESCRIPTION_MAX = 5000;
 // X-Upload-Content-Type / Content-Type du PUT quand le MIME réel du média n'est pas fourni.
@@ -162,6 +167,7 @@ export type PublishYouTubeShortParams = {
   title: string; // ≤ 100 (tronqué défensivement ci-dessous)
   description: string; // légende + hashtags déjà composés par le worker ; ≤ 5000 (tronqué défensivement)
   contentType?: string; // MIME réel du média (défaut video/*)
+  privacyStatus?: YouTubePrivacyStatus; // défaut public ; non répertorié/privé pour un essai (§37)
 };
 
 /**
@@ -188,9 +194,10 @@ async function initResumableUpload(params: PublishYouTubeShortParams): Promise<s
         description: params.description.slice(0, YOUTUBE_DESCRIPTION_MAX),
       },
       status: {
-        // V1 : publication directe et publique à l'heure H (pg-boss), comme IG/TikTok — pas de
-        // status.publishAt natif (déféré V2). selfDeclaredMadeForKids explicitement à false (requis).
-        privacyStatus: "public",
+        // Publication directe à l'heure H (pg-boss), comme IG/TikTok — pas de status.publishAt natif
+        // (déféré V2). Publique par défaut ; non répertoriée/privée si demandé (Short d'essai, §37).
+        // selfDeclaredMadeForKids explicitement à false (requis).
+        privacyStatus: params.privacyStatus ?? "public",
         selfDeclaredMadeForKids: false,
       },
     }),
@@ -309,5 +316,73 @@ export async function publishYouTubeShort(
   return {
     platformPostId: id,
     platformPostUrl: `https://www.youtube.com/shorts/${id}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Miniature personnalisée (CLAUDE.md §37) — thumbnails.set en upload simple, juste après videos.insert.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pose (ou remplace) la miniature d'une vidéo. L'image (≤ 2 Mo, déjà préparée par
+ * `prepareYouTubeThumbnail`) part dans le corps de la requête. Renvoie les URLs des miniatures que
+ * YouTube annonce. Erreur au format `Miniature YouTube refusée (<HTTP>): <corps>` pour
+ * `classifyThumbnailError`.
+ */
+export async function setYouTubeThumbnail(
+  accessToken: string,
+  videoId: string,
+  image: { data: Buffer; contentType: string },
+  timeoutMs = 60_000
+): Promise<ThumbnailUrls> {
+  const url = new URL(THUMBNAIL_SET_URL);
+  url.searchParams.set("videoId", videoId);
+  url.searchParams.set("uploadType", "media");
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": image.contentType },
+    body: new Uint8Array(image.data),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    throw new Error(`Miniature YouTube refusée (${res.status}): ${await res.text()}`);
+  }
+  const json = (await res.json()) as { items?: unknown[] };
+  return readThumbnailUrls(json.items?.[0]);
+}
+
+export type YouTubeVideoSummary = {
+  privacyStatus?: string;
+  uploadStatus?: string;
+  thumbnails: ThumbnailUrls;
+};
+
+/**
+ * Lecture d'une vidéo de la chaîne (videos.list part=snippet,status, 1 unité de quota) : miniatures
+ * actuellement servies par YouTube et visibilité. `null` si la vidéo n'existe plus.
+ */
+export async function fetchYouTubeVideoSummary(
+  accessToken: string,
+  videoId: string,
+  signal?: AbortSignal
+): Promise<YouTubeVideoSummary | null> {
+  const url = new URL(VIDEOS_URL);
+  url.searchParams.set("part", "snippet,status");
+  url.searchParams.set("id", videoId);
+
+  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+  if (!res.ok) {
+    throw new Error(`Lecture de la vidéo YouTube échouée (${res.status}): ${await res.text()}`);
+  }
+  const json = (await res.json()) as {
+    items?: Array<{ snippet?: { thumbnails?: unknown }; status?: { privacyStatus?: string; uploadStatus?: string } }>;
+  };
+  const item = json.items?.[0];
+  if (!item) return null;
+  return {
+    privacyStatus: item.status?.privacyStatus,
+    uploadStatus: item.status?.uploadStatus,
+    thumbnails: readThumbnailUrls(item.snippet?.thumbnails),
   };
 }

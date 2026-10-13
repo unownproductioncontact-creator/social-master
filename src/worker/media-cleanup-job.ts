@@ -6,6 +6,7 @@ import { objectKeysOfAsset } from "@/lib/media-keys";
 import {
   selectPurgeableMedia,
   selectUnusedStaleMedia,
+  thumbnailStillNeeded,
   UNUSED_MEDIA_MAX_AGE_DAYS,
   type RetentionCandidate,
 } from "@/lib/media-retention";
@@ -72,13 +73,20 @@ async function runUnusedMediaPurge(): Promise<void> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - UNUSED_MEDIA_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
 
+  // Une image choisie comme miniature YouTube ou couverture de Reel (§37) est utilisée, même hors PostMedia.
   const assets = await db.mediaAsset.findMany({
-    where: { status: "READY", createdAt: { lt: cutoff }, postMedia: { none: {} } },
-    select: { id: true, userId: true, sizeBytes: true, createdAt: true, _count: { select: { postMedia: true } } },
+    where: { status: "READY", createdAt: { lt: cutoff }, postMedia: { none: {} }, coverForTargets: { none: {} } },
+    select: {
+      id: true,
+      userId: true,
+      sizeBytes: true,
+      createdAt: true,
+      _count: { select: { postMedia: true, coverForTargets: true } },
+    },
   });
   const purgeable = new Set(
     selectUnusedStaleMedia(
-      assets.map((a) => ({ id: a.id, createdAt: a.createdAt, postCount: a._count.postMedia })),
+      assets.map((a) => ({ id: a.id, createdAt: a.createdAt, postCount: a._count.postMedia + a._count.coverForTargets })),
       now
     )
   );
@@ -92,9 +100,9 @@ async function runUnusedMediaPurge(): Promise<void> {
       // `deleteMediaAssetForUser` supprimerait ce brouillon avec le média.
       const fresh = await db.mediaAsset.findUnique({
         where: { id: asset.id },
-        select: { _count: { select: { postMedia: true } } },
+        select: { _count: { select: { postMedia: true, coverForTargets: true } } },
       });
-      if (!fresh || fresh._count.postMedia > 0) continue;
+      if (!fresh || fresh._count.postMedia > 0 || fresh._count.coverForTargets > 0) continue;
 
       const result = await deleteMediaAssetForUser(asset.userId, asset.id);
       if (result.error) {
@@ -139,29 +147,30 @@ async function runRetentionPurge(): Promise<void> {
     const retentionDays = user.mediaRetentionDays;
     if (retentionDays == null) continue; // le filtre SQL l'exclut déjà ; garde de typage
 
+    const postSelect = {
+      select: {
+        status: true,
+        updatedAt: true,
+        postTargets: { select: { publishedAt: true } },
+      },
+    } as const;
     const assets = await db.mediaAsset.findMany({
       where: { userId: user.id, status: "READY" },
       select: {
         id: true,
-        postMedia: {
-          select: {
-            post: {
-              select: {
-                status: true,
-                updatedAt: true,
-                postTargets: { select: { publishedAt: true } },
-              },
-            },
-          },
-        },
+        postMedia: { select: { post: postSelect } },
+        // Images de miniature YouTube / couverture de Reel (§37) : même règle que les médias du post.
+        coverForTargets: { select: { thumbnailStatus: true, post: postSelect } },
       },
     });
 
     const candidates: RetentionCandidate[] = assets.map((asset) => {
-      const posts = asset.postMedia.map((pm) => pm.post);
+      const posts = [...asset.postMedia.map((pm) => pm.post), ...asset.coverForTargets.map((t) => t.post)];
       const used = posts.length > 0;
       const allPublished = used && posts.every((p) => p.status === "PUBLISHED");
-      const inUseByPendingPost = posts.some((p) => p.status !== "PUBLISHED");
+      const inUseByPendingPost =
+        posts.some((p) => p.status !== "PUBLISHED") ||
+        thumbnailStillNeeded(asset.coverForTargets.map((t) => t.thumbnailStatus));
 
       // Dernière publication : le plus récent `PostTarget.publishedAt` de tous les posts du média
       // (repli sur `Post.updatedAt` d'un post publié dont les cibles n'auraient pas de date).

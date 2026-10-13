@@ -31,6 +31,8 @@ export type MediaCardData = {
   mediaUrl: string;
   thumbnailUrl: string | null;
   inUseCount: number;
+  /** Posts dont une cible utilise cette image comme miniature YouTube ou couverture de Reel (§37). */
+  coverCount: number;
   /** Jours avant la suppression automatique d'un média jamais utilisé (null = utilisé, donc conservé). */
   purgeInDays: number | null;
 };
@@ -189,7 +191,13 @@ export function MediaCard({
             </StatusBadge>
           )}
 
-          {asset.inUseCount === 0 && asset.purgeInDays != null && (
+          {asset.coverCount > 0 && (
+            <StatusBadge tone="muted">
+              Miniature · {asset.coverCount} post{asset.coverCount > 1 ? "s" : ""}
+            </StatusBadge>
+          )}
+
+          {asset.inUseCount === 0 && asset.coverCount === 0 && asset.purgeInDays != null && (
             // Un média jamais utilisé est supprimé tout seul 30 jours après son ajout (CLAUDE.md §36) :
             // on le dit. Libellé court (la carte est étroite sur mobile), détail en infobulle.
             <span title="Média jamais utilisé dans un post : supprimé automatiquement 30 jours après son ajout.">
@@ -215,7 +223,9 @@ export function MediaCard({
               description={
                 asset.inUseCount > 0
                   ? `Ce média est utilisé par ${asset.inUseCount} post${asset.inUseCount > 1 ? "s" : ""}. Les brouillons et posts programmés concernés seront dé-programmés et supprimés ; les posts déjà publiés restent dans votre historique (le média y est simplement détaché). Le fichier sera ensuite définitivement supprimé de votre stockage.`
-                  : "Le fichier sera définitivement supprimé de votre stockage. Cette action est irréversible."
+                  : asset.coverCount > 0
+                    ? `Cette image sert de miniature ou de couverture à ${asset.coverCount} post${asset.coverCount > 1 ? "s" : ""} : ils seront conservés et partiront sans elle. Le fichier sera définitivement supprimé de votre stockage.`
+                    : "Le fichier sera définitivement supprimé de votre stockage. Cette action est irréversible."
               }
               confirmLabel={asset.inUseCount > 0 ? "Dé-programmer et supprimer" : "Supprimer"}
               successMessage="Média supprimé."

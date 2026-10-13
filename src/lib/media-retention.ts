@@ -21,6 +21,15 @@ export type RetentionCandidate = {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
+ * Image servant de miniature YouTube (CLAUDE.md §37) encore attendue (nouvel essai programmé) ou en
+ * échec (l'utilisateur peut la reposer avec set_youtube_thumbnail) : jamais purgée. Une fois la
+ * miniature posée (SET), l'image suit la règle commune.
+ */
+export function thumbnailStillNeeded(thumbnailStatuses: ReadonlyArray<string | null>): boolean {
+  return thumbnailStatuses.some((status) => status === "PENDING" || status === "FAILED");
+}
+
+/**
  * Retourne les identifiants des médias purgeables : uniquement ceux dont TOUTES les publications
  * sont parties (`allPostsResolved`), aucune publication en attente (`inUseByPendingPost` faux), et
  * dont la dernière publication est antérieure à `now − retentionDays`. Un média jamais utilisé

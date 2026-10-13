@@ -65,6 +65,15 @@ export function classifyInstagramError(err: unknown): ClassifiedError {
   const message = err instanceof Error ? err.message : String(err);
 
   // Marqueurs internes (waitForContainerReady) — pas des codes Meta, matchés en clair sans risque.
+  // Conteneur en échec alors qu'une image de couverture était fournie (§37) : le worker a noté de ne
+  // plus l'envoyer → nouvel essai SANS elle (testé avant ig_container_error, contenu dans le message).
+  if (message.includes("ig_cover_retry")) {
+    return {
+      errorClass: "transient",
+      code: "ig_cover_retry",
+      message: "Instagram a refusé le Reel avec la couverture choisie — nouvel essai avec une image de la vidéo.",
+    };
+  }
   if (message.includes("ig_container_error")) {
     return { errorClass: "content_rejected", code: "ig_media_invalid", message: "Instagram a refusé ce média (le traitement du conteneur a échoué)." };
   }
@@ -194,14 +203,14 @@ export function classifyTikTokError(err: unknown): ClassifiedError {
 // Le provider injecte le corps brut dans le message d'erreur (throw new Error("... : ${text}")).
 // ---------------------------------------------------------------------------
 
-type GoogleErrorFields = {
+export type GoogleErrorFields = {
   code: number | null;
   reason: string | null;
   oauthError: string | null;
   status: string | null;
 };
 
-function extractGoogleError(message: string): GoogleErrorFields {
+export function extractGoogleError(message: string): GoogleErrorFields {
   const jsonStart = message.indexOf("{");
   if (jsonStart >= 0) {
     try {

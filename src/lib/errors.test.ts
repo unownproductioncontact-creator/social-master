@@ -100,6 +100,13 @@ describe("classifyInstagramError", () => {
   });
 });
 
+describe("classifyInstagramError — couverture refusée (§37)", () => {
+  it("ig_cover_retry est passager (nouvel essai sans couverture), même si le message contient ig_container_error", () => {
+    const err = new Error("ig_cover_retry: conteneur en échec avec la couverture, nouvel essai sans elle (ig_container_error: …)");
+    expect(classifyInstagramError(err)).toMatchObject({ errorClass: "transient", code: "ig_cover_retry" });
+  });
+});
+
 describe("classifyTikTokError", () => {
   it("classe spam_risk_too_many_posts comme quota (account_issue)", () => {
     const result = classifyTikTokError(new Error("spam_risk_too_many_posts"));

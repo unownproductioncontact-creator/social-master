@@ -1,5 +1,5 @@
 import "server-only";
-import type { JobWithMetadata } from "pg-boss";
+import type { Job, JobWithMetadata } from "pg-boss";
 import {
   getBoss,
   PUBLISH_QUEUE,
@@ -9,6 +9,7 @@ import {
   MEDIA_CLEANUP_QUEUE,
   MEDIA_IMPORT_QUEUE,
   ORPHAN_SWEEP_QUEUE,
+  YOUTUBE_THUMBNAIL_QUEUE,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
@@ -17,6 +18,8 @@ import { runStorageCheck } from "@/worker/storage-check-job";
 import { runMediaCleanup } from "@/worker/media-cleanup-job";
 import { runMediaImport } from "@/worker/media-import-job";
 import { runOrphanSweep } from "@/worker/orphan-sweep-job";
+import { runYouTubeThumbnailRetry } from "@/worker/youtube-thumbnail-job";
+import type { ThumbnailJobData } from "@/lib/youtube-thumbnail-service";
 
 let started = false;
 
@@ -54,6 +57,10 @@ export async function startWorker(): Promise<void> {
   // réseau, délai max 30 min (gros fichiers).
   await boss.createQueue(MEDIA_IMPORT_QUEUE, { retryLimit: 1, retryDelay: 30, expireInSeconds: 1800 });
 
+  // Nouvel essai UNIQUE d'une miniature YouTube après une erreur passagère (CLAUDE.md §37) : le job
+  // est programmé 5 min plus tard par youtube-thumbnail-service ; pas de relance pg-boss en plus.
+  await boss.createQueue(YOUTUBE_THUMBNAIL_QUEUE, { retryLimit: 0, expireInSeconds: 300 });
+
   await boss.work(
     PUBLISH_QUEUE,
     { batchSize: 1, includeMetadata: true, perJobResults: true },
@@ -88,7 +95,15 @@ export async function startWorker(): Promise<void> {
     }
   );
 
+  await boss.work(
+    YOUTUBE_THUMBNAIL_QUEUE,
+    { batchSize: 1 },
+    async ([job]: Job<ThumbnailJobData>[]) => {
+      await runYouTubeThumbnailRetry(job.data);
+    }
+  );
+
   console.log(
-    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import)"
+    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import, youtube-thumbnail)"
   );
 }

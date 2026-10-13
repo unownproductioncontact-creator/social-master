@@ -256,3 +256,66 @@ describe("Quota", () => {
     expect(sawSignal).toBe(true);
   });
 });
+
+describe("Couverture d'un Reel (cover_url, §37)", () => {
+  /** Faux Graph API : le conteneur répond selon `onContainer`, le reste suit le chemin nominal. */
+  function graph(onContainer: (body: URLSearchParams | undefined) => Response) {
+    mockFetch((url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST" && url.includes("/media_publish")) return res({ id: "media_final" });
+      if (method === "POST" && url.includes("/media")) {
+        return onContainer(init?.body instanceof URLSearchParams ? init.body : undefined);
+      }
+      if (url.includes("fields=status_code")) return res({ status_code: "FINISHED" });
+      if (url.includes("fields=permalink")) return res({ permalink: "https://instagram.com/reel/x" });
+      return res({}, false, 500);
+    });
+  }
+
+  it("cover_url envoyé avec le Reel, thumb_offset gardé en repli", async () => {
+    graph(() => res({ id: "c1" }));
+    const r = await publishInstagramMedia(
+      {
+        igUserId: "ig",
+        accessToken: "t",
+        caption: "x",
+        mediaType: "REELS",
+        mediaUrl: "https://w/v.mp4",
+        coverUrl: "https://w/cover.jpg",
+        thumbOffsetMs: 900,
+      },
+      1,
+      5000
+    );
+    expect(r.coverIgnored).toBeUndefined();
+    const container = calls.find((c) => c.method === "POST" && c.body?.get("media_type") === "REELS")!;
+    expect(container.body?.get("cover_url")).toBe("https://w/cover.jpg");
+    expect(container.body?.get("thumb_offset")).toBe("900");
+  });
+
+  it("couverture refusée à la création du conteneur (4xx) : conteneur recréé SANS elle, le Reel part", async () => {
+    graph((body) =>
+      body?.get("cover_url")
+        ? res({ error: { message: "Invalid parameter", type: "OAuthException", code: 100 } }, false, 400)
+        : res({ id: "c2" })
+    );
+    const r = await publishInstagramMedia(
+      { igUserId: "ig", accessToken: "t", caption: "x", mediaType: "REELS", mediaUrl: "https://w/v.mp4", coverUrl: "https://w/cover.jpg" },
+      1,
+      5000
+    );
+    expect(r.platformPostId).toBe("media_final");
+    expect(r.coverIgnored).toMatch(/\(400\)/);
+    const containers = calls.filter((c) => c.method === "POST" && c.body?.get("media_type") === "REELS");
+    expect(containers).toHaveLength(2);
+    expect(containers[1].body?.get("cover_url")).toBeNull();
+  });
+
+  it("sans couverture, une erreur 4xx du conteneur remonte telle quelle (pas de second essai)", async () => {
+    graph(() => res({ error: { message: "Invalid parameter", code: 100 } }, false, 400));
+    await expect(
+      publishInstagramMedia({ igUserId: "ig", accessToken: "t", caption: "x", mediaType: "REELS", mediaUrl: "https://w/v.mp4" }, 1, 5000)
+    ).rejects.toThrow(/\(400\)/);
+    expect(calls.filter((c) => c.method === "POST" && c.body?.get("media_type") === "REELS")).toHaveLength(1);
+  });
+});

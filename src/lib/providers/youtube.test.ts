@@ -13,7 +13,10 @@ import {
   refreshYouTubeAccessToken,
   fetchYouTubeChannel,
   publishYouTubeShort,
+  setYouTubeThumbnail,
+  fetchYouTubeVideoSummary,
 } from "@/lib/providers/youtube";
+import { classifyThumbnailError } from "@/lib/youtube-thumbnail";
 import { resolveYouTubeTitle, youtubeTitleFallback } from "@/lib/content-type";
 import { getObjectStream, mediaWorkerPushConfig } from "@/lib/storage";
 
@@ -308,5 +311,97 @@ describe("titre YouTube — helpers canoniques de @/lib/content-type (contrat pa
     expect(resolveYouTubeTitle(undefined, "Première ligne\n#tags")).toBe("Première ligne");
     expect(resolveYouTubeTitle("", "")).toBe("Short");
     expect(resolveYouTubeTitle(null, "   \n  ")).toBe("Short");
+  });
+});
+
+describe("Miniature personnalisée et lecture de la vidéo (§37)", () => {
+  it("visibilité non répertoriée transmise à l'initialisation de l'envoi", async () => {
+    mockFetch((url, init) =>
+      (init?.method ?? "GET") === "POST"
+        ? res({}, { headers: { location: "https://upload.example/session" } })
+        : res({ id: "vid_unlisted" })
+    );
+    await publishYouTubeShort({
+      accessToken: "at",
+      storageKey: "media/u/clip.mp4",
+      videoSizeBytes: 10,
+      title: "Essai",
+      description: "d",
+      contentType: "video/mp4",
+      privacyStatus: "unlisted",
+    });
+    const init = calls.find((c) => c.method === "POST")!;
+    expect(JSON.parse(init.body!).status.privacyStatus).toBe("unlisted");
+  });
+
+  it("thumbnails.set : POST en upload simple, image dans le corps, URLs des miniatures renvoyées", async () => {
+    let sentBody: unknown;
+    mockFetch((_url, init) => {
+      sentBody = init?.body;
+      return res({
+        kind: "youtube#thumbnailSetResponse",
+        items: [
+          {
+            default: { url: "https://i.ytimg.com/vi/vid_1/default.jpg", width: 120, height: 90 },
+            maxres: { url: "https://i.ytimg.com/vi/vid_1/maxresdefault.jpg", width: 1280, height: 720 },
+          },
+        ],
+      });
+    });
+    const image = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    const urls = await setYouTubeThumbnail("at", "vid_1", { data: image, contentType: "image/jpeg" });
+
+    expect(urls).toEqual({
+      default: "https://i.ytimg.com/vi/vid_1/default.jpg",
+      maxres: "https://i.ytimg.com/vi/vid_1/maxresdefault.jpg",
+    });
+    const call = calls[0];
+    const url = new URL(call.url);
+    expect(call.method).toBe("POST");
+    expect(url.origin + url.pathname).toBe("https://www.googleapis.com/upload/youtube/v3/thumbnails/set");
+    expect(url.searchParams.get("videoId")).toBe("vid_1");
+    expect(url.searchParams.get("uploadType")).toBe("media");
+    expect(call.headers.Authorization).toBe("Bearer at");
+    expect(call.headers["Content-Type"]).toBe("image/jpeg");
+    expect(Buffer.from(sentBody as Uint8Array)).toEqual(image);
+  });
+
+  it("refus 403 : erreur au format attendu par classifyThumbnailError", async () => {
+    mockFetch(() =>
+      res(
+        { error: { code: 403, message: "The authenticated user doesn't have permissions to upload and set custom video thumbnails.", errors: [{ reason: "forbidden" }] } },
+        { ok: false, status: 403 }
+      )
+    );
+    const err = await setYouTubeThumbnail("at", "vid_1", { data: Buffer.from([1]), contentType: "image/png" }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/^Miniature YouTube refusée \(403\): /);
+    expect(classifyThumbnailError(err).code).toBe("yt_thumb_forbidden");
+  });
+
+  it("videos.list part=snippet,status : visibilité + miniatures servies ; null si la vidéo n'existe plus", async () => {
+    mockFetch(() =>
+      res({
+        items: [
+          {
+            snippet: { thumbnails: { high: { url: "https://i.ytimg.com/vi/vid_1/hqdefault.jpg" } } },
+            status: { privacyStatus: "unlisted", uploadStatus: "processed" },
+          },
+        ],
+      })
+    );
+    expect(await fetchYouTubeVideoSummary("at", "vid_1")).toEqual({
+      privacyStatus: "unlisted",
+      uploadStatus: "processed",
+      thumbnails: { high: "https://i.ytimg.com/vi/vid_1/hqdefault.jpg" },
+    });
+    const url = new URL(calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://www.googleapis.com/youtube/v3/videos");
+    expect(url.searchParams.get("part")).toBe("snippet,status");
+    expect(url.searchParams.get("id")).toBe("vid_1");
+
+    calls = [];
+    mockFetch(() => res({ items: [] }));
+    expect(await fetchYouTubeVideoSummary("at", "gone")).toBeNull();
   });
 });

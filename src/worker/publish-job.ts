@@ -21,6 +21,9 @@ import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
+import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
+import { applyYouTubeThumbnail } from "@/lib/youtube-thumbnail-service";
+import { coverPlan, type CoverResult } from "@/lib/instagram-cover";
 import { notifyTelegram } from "@/lib/telegram";
 import { appUrl } from "@/lib/app-url";
 
@@ -43,7 +46,14 @@ export function composeCaption(target: {
 export async function afterTargetDelivered(
   target: { id: string; platform: string; postId: string; post: { userId: string } },
   caption: string,
-  extraDetail: { tiktokReception?: TikTokReception; delivery?: DeliveryPath } = {}
+  extraDetail: {
+    tiktokReception?: TikTokReception;
+    delivery?: DeliveryPath;
+    /** Reel : couverture réellement utilisée (§37). */
+    cover?: CoverResult;
+    /** YouTube : issue de la miniature au moment de la publication (§37). */
+    thumbnail?: string;
+  } = {}
 ): Promise<void> {
   // P1-7a : à chaque dépôt en brouillon TikTok (inbox), on notifie Telegram avec la LÉGENDE prête à
   // copier — l'API TikTok ne transmet pas la caption, et Telegram est déjà sur le téléphone du user
@@ -83,6 +93,7 @@ async function processTarget(postTargetId: string): Promise<void> {
     include: {
       post: { include: { postMedia: { include: { mediaAsset: true } } } },
       socialAccount: true,
+      coverMedia: true,
     },
   });
 
@@ -106,6 +117,9 @@ async function processTarget(postTargetId: string): Promise<void> {
   const caption = composeCaption(target);
   /** Par où est passé le fichier — journalisé avec la livraison, relu par get_post (§36). */
   let delivery: DeliveryPath | undefined;
+  /** Couverture du Reel et miniature YouTube réellement appliquées — journalisées, relues par get_post (§37). */
+  let cover: CoverResult | undefined;
+  let thumbnail: string | undefined;
 
   if (target.platform === "INSTAGRAM") {
     const quota = await getContentPublishingLimit(target.socialAccount.platformAccountId, accessToken);
@@ -136,23 +150,52 @@ async function processTarget(postTargetId: string): Promise<void> {
             const media = orderedMedia[0];
             const isImage = target.contentType === "IMAGE" || (target.contentType === "STORY" && !media.mimeType.startsWith("video/"));
             const key = isImage ? await ensureJpegVersion(media.storageKey, media.mimeType) : media.storageKey;
-            // Frame de couverture choisie dans le composer (Reel uniquement), stockée en JSON.
-            const coverTimeMs =
-              target.contentType === "REEL"
-                ? (target.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs
-                : undefined;
-            return publishInstagramMedia({
-              igUserId: target.socialAccount.platformAccountId,
-              accessToken,
-              caption,
-              mediaType: target.contentType === "REEL" ? "REELS" : target.contentType === "STORY" ? "STORIES" : "IMAGE",
-              mediaUrl: getPublicMediaUrl(key),
-              isVideo: media.mimeType.startsWith("video/"),
-              thumbOffsetMs: coverTimeMs ?? undefined,
-              collaborators,
-              // Réel d'essai (§34) : Reel uniquement.
-              trialStrategy: target.contentType === "REEL" ? trialFromOptions(target.platformOptions) : null,
-            });
+            // Couverture du Reel (§37) : image de la médiathèque (cover_url, servie par le Worker) si
+            // choisie et pas déjà refusée par Instagram, sinon la frame choisie (thumb_offset).
+            const plan = coverPlan(target.contentType, target.platformOptions, target.coverMedia);
+            let coverUrl: string | undefined;
+            let coverPrepError: string | undefined;
+            if (plan.coverMedia) {
+              // Copie JPEG si besoin (PNG/WebP) : son échec ne doit pas empêcher le Reel de partir.
+              try {
+                coverUrl = getPublicMediaUrl(await ensureJpegVersion(plan.coverMedia.storageKey, plan.coverMedia.mimeType));
+              } catch (err) {
+                coverPrepError = `Couverture illisible : ${err instanceof Error ? err.message : String(err)}`;
+                console.error(`[publish-job] couverture ignorée (target ${postTargetId}) : ${coverPrepError}`);
+              }
+            }
+            try {
+              const published = await publishInstagramMedia({
+                igUserId: target.socialAccount.platformAccountId,
+                accessToken,
+                caption,
+                mediaType: target.contentType === "REEL" ? "REELS" : target.contentType === "STORY" ? "STORIES" : "IMAGE",
+                mediaUrl: getPublicMediaUrl(key),
+                isVideo: media.mimeType.startsWith("video/"),
+                thumbOffsetMs: plan.thumbOffsetMs,
+                coverUrl,
+                collaborators,
+                // Réel d'essai (§34) : Reel uniquement.
+                trialStrategy: target.contentType === "REEL" ? trialFromOptions(target.platformOptions) : null,
+              });
+              const coverError = published.coverIgnored ?? coverPrepError;
+              cover = coverError
+                ? { applied: "frame", reason: "cover_refused", thumbOffsetMs: plan.thumbOffsetMs, error: coverError.slice(0, 500) }
+                : plan.result;
+              return published;
+            } catch (err) {
+              // Conteneur en échec alors qu'une couverture était fournie : impossible de savoir si c'est
+              // elle ou la vidéo. On note de ne plus l'envoyer et on relance (erreur passagère) — au pire
+              // le Reel part avec une frame de la vidéo, jamais pas du tout à cause de la couverture.
+              if (coverUrl && err instanceof Error && err.message.includes("ig_container_error")) {
+                await db.postTarget.update({
+                  where: { id: postTargetId },
+                  data: { platformOptions: { ...((target.platformOptions as object | null) ?? {}), coverRefused: "container_error" } },
+                });
+                throw new Error(`ig_cover_retry: conteneur en échec avec la couverture, nouvel essai sans elle (${err.message})`);
+              }
+              throw err;
+            }
           })();
 
     await db.postTarget.update({
@@ -203,6 +246,7 @@ async function processTarget(postTargetId: string): Promise<void> {
       title,
       description: caption,
       contentType: media.mimeType,
+      privacyStatus: youtubePrivacyFromOptions(target.platformOptions),
     });
 
     await db.postTarget.update({
@@ -216,6 +260,12 @@ async function processTarget(postTargetId: string): Promise<void> {
         errorMessage: null,
       },
     });
+
+    // Miniature personnalisée (§37) : posée dès que la vidéo existe, APRÈS l'avoir marquée publiée.
+    // `applyYouTubeThumbnail` ne lève jamais : un échec ne touche ni la vidéo ni ce job.
+    if (target.coverMediaAssetId || target.thumbnailStatus === "PENDING") {
+      thumbnail = (await applyYouTubeThumbnail(postTargetId, { attempt: 1, justUploaded: true })).status;
+    }
   } else {
     // TikTok (vidéo ou photo) : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas
     // auditée. Un retry ne renvoie JAMAIS un média que TikTok détient déjà (publish_id persisté) : il
@@ -257,7 +307,11 @@ async function processTarget(postTargetId: string): Promise<void> {
     }
   }
 
-  await afterTargetDelivered(target, caption, { delivery });
+  await afterTargetDelivered(target, caption, {
+    delivery,
+    ...(cover ? { cover } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
+  });
 }
 
 export async function markFailure(

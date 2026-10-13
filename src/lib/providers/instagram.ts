@@ -167,6 +167,7 @@ type CreateContainerParams = {
   mediaUrl: string; // video_url pour REELS/STORIES vidéo, image_url pour IMAGE/STORIES image
   isVideo?: boolean; // requis pour distinguer une Story image d'une Story vidéo
   thumbOffsetMs?: number; // Reel : frame de couverture (thumb_offset, en ms depuis le début de la vidéo)
+  coverUrl?: string; // Reel : image de couverture (cover_url, JPEG public) — prime sur thumb_offset (§37)
   collaborators?: string[]; // Post/Reel : pseudos invités en collaboration (≤ 3) — ignoré pour une Story
   trialStrategy?: InstagramTrialStrategy | null; // Reel : réel d'essai (trial_params, §34) — ignoré hors REELS
 };
@@ -214,6 +215,10 @@ export async function createMediaContainer(params: CreateContainerParams): Promi
     // Couverture du Reel : frame à `thumbOffsetMs` ms (choisie dans le composer pour matcher TikTok).
     if (params.thumbOffsetMs != null && params.thumbOffsetMs >= 0) {
       body.thumb_offset = String(Math.round(params.thumbOffsetMs));
+    }
+    // Image de couverture (§37) : Meta la télécharge ; elle prime sur thumb_offset, gardé en repli.
+    if (params.coverUrl) {
+      body.cover_url = params.coverUrl;
     }
     // Réel d'essai : montré d'abord aux seuls non-abonnés (objet JSON, comme `collaborators`).
     if (params.trialStrategy) {
@@ -343,19 +348,33 @@ async function waitForContainerReady(
   }
 }
 
-/** Orchestre le flow complet pour un média unique (Reel, image, ou Story) : container → poll → publish → permalink. */
+/**
+ * Orchestre le flow complet pour un média unique (Reel, image, ou Story) : container → poll → publish → permalink.
+ * Avec une image de couverture (§37) : si Instagram refuse la création du conteneur (4xx), on le recrée
+ * SANS elle — la couverture ne doit jamais empêcher la publication. `coverIgnored` porte alors l'erreur.
+ * Sans risque de doublon : seul `media_publish` publie, un conteneur abandonné expire seul en 24 h.
+ */
 export async function publishInstagramMedia(
   params: CreateContainerParams,
   pollIntervalMs = 30000,
   maxWaitMs = 5 * 60 * 1000
-): Promise<{ platformPostId: string; platformPostUrl: string | null }> {
-  const containerId = await createMediaContainer(params);
+): Promise<{ platformPostId: string; platformPostUrl: string | null; coverIgnored?: string }> {
+  let containerId: string;
+  let coverIgnored: string | undefined;
+  try {
+    containerId = await createMediaContainer(params);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!params.coverUrl || !/Graph API Instagram échouée \(4\d\d\)/.test(message)) throw err;
+    coverIgnored = message;
+    containerId = await createMediaContainer({ ...params, coverUrl: undefined });
+  }
   await waitForContainerReady(containerId, params.accessToken, pollIntervalMs, maxWaitMs);
 
   const mediaId = await publishContainer(params.igUserId, containerId, params.accessToken);
   const permalink = await fetchMediaPermalink(mediaId, params.accessToken);
 
-  return { platformPostId: mediaId, platformPostUrl: permalink };
+  return { platformPostId: mediaId, platformPostUrl: permalink, ...(coverIgnored ? { coverIgnored } : {}) };
 }
 
 /**

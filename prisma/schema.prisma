@@ -70,17 +70,25 @@ enum PublishJobState {
   CANCELLED
 }
 
+// Miniature personnalisée d'une vidéo YouTube (CLAUDE.md §37) : statut SÉPARÉ de celui de la vidéo —
+// un échec de la miniature ne fait jamais échouer la publication.
+enum ThumbnailStatus {
+  PENDING
+  SET
+  FAILED
+}
+
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  timezone     String   @default("Europe/Paris")
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  name               String?
+  timezone           String   @default("Europe/Paris")
   // Purge automatique optionnelle des médias déjà publiés (null = désactivé). Voir
   // src/lib/media-retention.ts (sélection pure) + src/worker/media-cleanup-job.ts (passe de purge).
   mediaRetentionDays Int?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   socialAccounts SocialAccount[]
   mediaAssets    MediaAsset[]
@@ -138,7 +146,9 @@ model MediaAsset {
   importError  String?
   createdAt    DateTime    @default(now())
 
-  postMedia PostMedia[]
+  postMedia       PostMedia[]
+  // Cibles qui utilisent ce média comme miniature YouTube ou couverture de Reel (CLAUDE.md §37).
+  coverForTargets PostTarget[] @relation("PostTargetCover")
 
   @@index([userId])
   @@map("media_assets")
@@ -179,39 +189,51 @@ model PostMedia {
 }
 
 model PostTarget {
-  id              String           @id @default(cuid())
-  postId          String
-  post            Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
-  socialAccountId String
-  socialAccount   SocialAccount    @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
-  platform        Platform
-  contentType     PostContentType
-  publishMode     PublishMode      @default(AUTO)
-  captionOverride String?
+  id                String           @id @default(cuid())
+  postId            String
+  post              Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccountId   String
+  socialAccount     SocialAccount    @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  platform          Platform
+  contentType       PostContentType
+  publishMode       PublishMode      @default(AUTO)
+  captionOverride   String?
   // Horaire effectif de publication PROPRE à cette cible, en UTC (peut différer de Post.scheduledAt :
   // ex. TikTok à H et Instagram à H+5min). Null tant que le post n'est pas programmé (voir scheduler.ts).
-  scheduledAt     DateTime?
-  platformOptions Json             @default("{}")
-  status          PostTargetStatus @default(PENDING)
-  platformPostId  String?
-  platformPostUrl String?
-  publishedAt     DateTime?
-  errorCode       String?
-  errorMessage    String?
+  scheduledAt       DateTime?
+  platformOptions   Json             @default("{}")
+  status            PostTargetStatus @default(PENDING)
+  platformPostId    String?
+  platformPostUrl   String?
+  publishedAt       DateTime?
+  errorCode         String?
+  errorMessage      String?
   // Brouillon TikTok (inbox) : `publish_id` renvoyé par TikTok une fois le fichier ENTIÈREMENT transmis
   // (vidéo) ou l'init acceptée (photo). Tant qu'il est renseigné, un retry ne renvoie JAMAIS le média :
   // il reprend seulement la vérification du statut (sinon un traitement TikTok lent = brouillons en
   // double, constaté le 30/09/2026). Remis à null à chaque (re)programmation. Voir CLAUDE.md §27.
-  tiktokPublishId  String?
-  tiktokUploadedAt DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  tiktokPublishId   String?
+  tiktokUploadedAt  DateTime?
+  // Image de la médiathèque utilisée comme miniature (YouTube, `thumbnails.set` juste après la mise en
+  // ligne) ou comme couverture de Reel (Instagram, `cover_url`). Relation et non JSON : un média
+  // référencé ici est « utilisé » (jamais purgé comme inutilisé) ; sa suppression détache simplement
+  // l'image (SetNull), la vidéo part alors sans miniature. Voir CLAUDE.md §37.
+  coverMediaAssetId String?
+  coverMedia        MediaAsset?      @relation("PostTargetCover", fields: [coverMediaAssetId], references: [id], onDelete: SetNull)
+  // YouTube uniquement : état de la miniature (null = aucune demandée). PENDING = à poser (avant
+  // publication, ou nouvel essai programmé) ; SET = posée ; FAILED = abandon, raison dans thumbnailError.
+  thumbnailStatus   ThumbnailStatus?
+  thumbnailError    String?
+  thumbnailSetAt    DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 
   publishJobs PublishJob[]
 
   @@index([postId])
   @@index([socialAccountId])
   @@index([status])
+  @@index([coverMediaAssetId])
   @@map("post_targets")
 }
 

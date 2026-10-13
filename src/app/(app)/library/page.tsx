@@ -10,7 +10,8 @@ export default async function LibraryPage() {
 
   const assets = await db.mediaAsset.findMany({
     where: { userId: session.userId, status: "READY" },
-    include: { _count: { select: { postMedia: true } } },
+    // Une image servant de miniature YouTube ou de couverture de Reel compte comme utilisée (§37).
+    include: { _count: { select: { postMedia: true, coverForTargets: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -28,7 +29,9 @@ export default async function LibraryPage() {
     mediaUrl: getPublicMediaUrl(asset.storageKey),
     thumbnailUrl: asset.thumbnailKey ? getPublicMediaUrl(asset.thumbnailKey) : null,
     inUseCount: asset._count.postMedia,
-    purgeInDays: asset._count.postMedia === 0 ? daysBeforeUnusedPurge(asset.createdAt, now) : null,
+    coverCount: asset._count.coverForTargets,
+    purgeInDays:
+      asset._count.postMedia + asset._count.coverForTargets === 0 ? daysBeforeUnusedPurge(asset.createdAt, now) : null,
   }));
 
   return <MediaLibrary assets={cards} />;
