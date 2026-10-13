@@ -5,6 +5,8 @@ import {
   finalFailureMessage,
   needsThumbnailRecompression,
   pendingRetryMessage,
+  processingDecision,
+  PROCESSING_MAX_CHECKS,
   readThumbnailUrls,
   summarizeApiError,
   ThumbnailImageError,
@@ -162,5 +164,16 @@ describe("thumbnailStillNeeded (purge des médias)", () => {
     expect(thumbnailStillNeeded(["SET", "FAILED"])).toBe(true);
     expect(thumbnailStillNeeded(["SET", null])).toBe(false);
     expect(thumbnailStillNeeded([])).toBe(false);
+  });
+});
+
+describe("processingDecision (attente du traitement de la vidéo)", () => {
+  it("traitée → envoi ; en cours → attendre ; échec YouTube → abandon ; plafond atteint → dernier essai", () => {
+    expect(processingDecision("processed", 1)).toBe("apply");
+    expect(processingDecision("uploaded", 1)).toBe("wait");
+    expect(processingDecision(undefined, 5)).toBe("wait");
+    expect(processingDecision("failed", 1)).toBe("video_failed");
+    expect(processingDecision("rejected", 3)).toBe("video_failed");
+    expect(processingDecision("uploaded", PROCESSING_MAX_CHECKS)).toBe("give_up");
   });
 });

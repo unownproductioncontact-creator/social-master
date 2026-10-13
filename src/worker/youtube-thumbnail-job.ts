@@ -1,16 +1,21 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { purgeMediaForPublishedPost } from "@/lib/media-delete";
-import { applyYouTubeThumbnail, type ThumbnailJobData } from "@/lib/youtube-thumbnail-service";
+import { applyYouTubeThumbnail, checkProcessingThenApply, type ThumbnailJobData } from "@/lib/youtube-thumbnail-service";
 
 /**
- * Nouvel essai automatique d'une miniature YouTube (CLAUDE.md §37), 5 min après une erreur passagère.
- * Ne fait rien si l'image a été remplacée ou si la miniature n'est plus en attente. Ensuite, la purge
- * « Dès la publication » a sa chance : l'image de la miniature était protégée tant qu'elle attendait.
+ * Jobs de la file `youtube-thumbnail` (CLAUDE.md §37) : vérification de la fin du traitement de la
+ * vidéo (`processing`, toutes les 2 min jusqu'à ~40 min) ou nouvel essai unique 5 min après une erreur
+ * passagère (`retry`). Rien n'est fait si l'image a été remplacée ou si la miniature n'est plus en
+ * attente. Ensuite, la purge « Dès la publication » a sa chance : l'image était protégée tant qu'elle attendait.
  */
 export async function runYouTubeThumbnailRetry(data: ThumbnailJobData): Promise<void> {
-  const outcome = await applyYouTubeThumbnail(data.postTargetId, { attempt: 2, expectedMediaId: data.mediaAssetId });
-  console.log(`[youtube-thumbnail] nouvel essai (target ${data.postTargetId}) : ${outcome.status}`);
+  const outcome =
+    data.kind === "processing"
+      ? await checkProcessingThenApply(data.postTargetId, data.mediaAssetId, data.check ?? 1)
+      : await applyYouTubeThumbnail(data.postTargetId, { attempt: 2, expectedMediaId: data.mediaAssetId });
+  console.log(`[youtube-thumbnail] ${data.kind ?? "retry"} (target ${data.postTargetId}) : ${outcome.status}`);
+  if (outcome.status === "PENDING") return; // encore en attente : la purge attendra l'issue
 
   const target = await db.postTarget.findUnique({
     where: { id: data.postTargetId },

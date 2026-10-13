@@ -15,6 +15,7 @@ vi.mock("@/lib/storage", () => ({
 vi.mock("@/lib/providers/youtube", () => ({
   setYouTubeThumbnail: vi.fn(),
   refreshYouTubeAccessToken: vi.fn(),
+  fetchYouTubeVideoSummary: vi.fn(),
 }));
 vi.mock("@/lib/youtube-token", () => ({ freshYouTubeAccessToken: vi.fn(async () => "yt-token") }));
 vi.mock("@/lib/telegram", () => ({ notifyTelegram: vi.fn(async () => {}) }));
@@ -33,10 +34,12 @@ vi.mock("@/worker/boss", () => ({
 
 const { db } = await import("@/lib/db");
 const { saveDraftForUser } = await import("@/lib/post-service");
-const { applyYouTubeThumbnail, requestYouTubeThumbnailForUser } = await import("@/lib/youtube-thumbnail-service");
+const { applyYouTubeThumbnail, requestYouTubeThumbnailForUser, scheduleThumbnailAfterUpload, checkProcessingThenApply } = await import(
+  "@/lib/youtube-thumbnail-service"
+);
 const { runMediaCleanup } = await import("@/worker/media-cleanup-job");
 const { purgeMediaForPublishedPost } = await import("@/lib/media-delete");
-const { setYouTubeThumbnail } = await import("@/lib/providers/youtube");
+const { setYouTubeThumbnail, fetchYouTubeVideoSummary } = await import("@/lib/providers/youtube");
 const { notifyTelegram } = await import("@/lib/telegram");
 
 const TEST_EMAIL = "vitest-yt-thumbnail@test.local";
@@ -116,8 +119,14 @@ beforeEach(() => {
   sent.length = 0;
   deletedKeys.length = 0;
   vi.mocked(setYouTubeThumbnail).mockReset();
+  vi.mocked(fetchYouTubeVideoSummary).mockReset();
   vi.mocked(notifyTelegram).mockClear();
 });
+
+/** État de traitement que « voit » YouTube pour la vidéo de test. */
+function videoState(uploadStatus: string) {
+  vi.mocked(fetchYouTubeVideoSummary).mockResolvedValue({ uploadStatus, privacyStatus: "unlisted", thumbnails: {} });
+}
 
 afterAll(async () => {
   await db.user.deleteMany({ where: { email: TEST_EMAIL } }); // cascade : comptes, médias, posts, cibles, journal
@@ -318,8 +327,87 @@ describe("applyYouTubeThumbnail : statut séparé, nouvel essai, journal", () =>
   });
 });
 
+describe("attente de la fin du traitement YouTube (constat du test réel du 13/10/2026)", () => {
+  it("après la publication : rien n'est envoyé tout de suite, 1re vérification programmée ~45 s plus tard", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    const outcome = await scheduleThumbnailAfterUpload(targetId);
+    expect(outcome.status).toBe("PENDING");
+    expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toEqual({ postTargetId: targetId, mediaAssetId: thumbId, kind: "processing", check: 1 });
+    const delay = (sent[0].options as { startAfter: Date }).startAfter.getTime() - Date.now();
+    expect(delay).toBeGreaterThan(40_000);
+    expect(delay).toBeLessThan(60_000);
+  });
+
+  it("encore « uploaded » : nouvelle vérification dans 2 min, sans appeler thumbnails.set", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    videoState("uploaded");
+    const outcome = await checkProcessingThenApply(targetId, thumbId, 3);
+    expect(outcome.status).toBe("PENDING");
+    expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+    expect(sent[0].data).toEqual({ postTargetId: targetId, mediaAssetId: thumbId, kind: "processing", check: 4 });
+    const delay = (sent[0].options as { startAfter: Date }).startAfter.getTime() - Date.now();
+    expect(delay).toBeGreaterThan(100_000);
+  });
+
+  it("« processed » : la miniature part → SET", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    videoState("processed");
+    vi.mocked(setYouTubeThumbnail).mockResolvedValueOnce({ high: "https://i.ytimg.com/vi/yt_video_1/hqdefault.jpg" });
+    expect((await checkProcessingThenApply(targetId, thumbId, 2)).status).toBe("SET");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("traitement échoué chez YouTube : FAILED expliqué, aucun envoi", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    videoState("failed");
+    expect(await checkProcessingThenApply(targetId, thumbId, 2)).toMatchObject({ status: "FAILED", code: "yt_thumb_video_failed" });
+    expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+  });
+
+  it("~40 min sans fin de traitement : un dernier essai, et un 403 est expliqué par ce délai", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    videoState("uploaded");
+    vi.mocked(setYouTubeThumbnail).mockRejectedValueOnce(
+      new Error(
+        `Miniature YouTube refusée (403): ${JSON.stringify({
+          error: { code: 403, message: "The thumbnail can't be set for the specified video. The request might not be properly authorized.", errors: [{ reason: "forbidden" }] },
+        })}`
+      )
+    );
+    const outcome = await checkProcessingThenApply(targetId, thumbId, 20);
+    expect(outcome).toMatchObject({ status: "FAILED", code: "yt_thumb_forbidden_video" });
+    expect((await db.postTarget.findUniqueOrThrow({ where: { id: targetId } })).thumbnailError).toMatch(/toujours en traitement/);
+  });
+
+  it("lecture de l'état impossible : traitée comme « pas encore prêt »", async () => {
+    const { targetId } = await publishedYouTubeTarget(thumbId);
+    vi.mocked(fetchYouTubeVideoSummary).mockRejectedValueOnce(new TypeError("fetch failed"));
+    expect((await checkProcessingThenApply(targetId, thumbId, 1)).status).toBe("PENDING");
+    expect(sent[0].data).toMatchObject({ kind: "processing", check: 2 });
+  });
+
+  it("image remplacée pendant l'attente : la vérification s'arrête", async () => {
+    const { targetId } = await publishedYouTubeTarget(otherThumbId);
+    videoState("processed");
+    expect((await checkProcessingThenApply(targetId, thumbId, 2)).status).toBe("SKIPPED");
+    expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+  });
+});
+
 describe("set_youtube_thumbnail", () => {
+  it("vidéo encore en traitement : PENDING, vérification programmée ~45 s plus tard", async () => {
+    const { postId, targetId } = await publishedYouTubeTarget(null, null);
+    videoState("uploaded");
+    const result = await requestYouTubeThumbnailForUser(userId, postId, thumbId);
+    expect(result.outcome?.status).toBe("PENDING");
+    expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+    expect(sent[0].data).toEqual({ postTargetId: targetId, mediaAssetId: thumbId, kind: "processing", check: 2 });
+  });
+
   it("vidéo déjà publiée : envoi immédiat → SET ; vidéo pas encore publiée : retenue sans appel", async () => {
+    videoState("processed");
     vi.mocked(setYouTubeThumbnail).mockResolvedValueOnce({ high: "https://i.ytimg.com/vi/yt_video_1/hqdefault.jpg" });
     const { postId, targetId } = await publishedYouTubeTarget(null, null);
     const published = await requestYouTubeThumbnailForUser(userId, postId, otherThumbId);

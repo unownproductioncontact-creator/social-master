@@ -25,6 +25,26 @@ export const THUMBNAIL_JPEG_QUALITIES: readonly number[] = [90, 85, 80, 75, 70, 
 /** Délai du nouvel essai automatique (un seul) après une erreur 5xx, 429 ou réseau. */
 export const THUMBNAIL_RETRY_DELAY_MS = 5 * 60 * 1000;
 
+/**
+ * Attente de la fin du traitement de la vidéo (constat du test réel du 13/10/2026, §37) : juste après
+ * `videos.insert`, tant que `status.uploadStatus` vaut « uploaded », `thumbnails.set` répond 403
+ * « The thumbnail can't be set for the specified video » ; une fois « processed », la même miniature
+ * passe. On vérifie donc l'état (videos.list, 1 unité) : 45 s après l'envoi, puis toutes les 2 min,
+ * 20 fois au plus (~40 min) — au-delà on tente quand même une fois.
+ */
+export const PROCESSING_FIRST_CHECK_MS = 45 * 1000;
+export const PROCESSING_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+export const PROCESSING_MAX_CHECKS = 20;
+
+export type ProcessingDecision = "apply" | "wait" | "video_failed" | "give_up";
+
+/** Que faire à la vérification n° `check` (1 = la première) selon `status.uploadStatus` de YouTube. */
+export function processingDecision(uploadStatus: string | undefined, check: number): ProcessingDecision {
+  if (uploadStatus === "processed") return "apply";
+  if (uploadStatus === "failed" || uploadStatus === "rejected" || uploadStatus === "deleted") return "video_failed";
+  return check >= PROCESSING_MAX_CHECKS ? "give_up" : "wait";
+}
+
 /** Scopes OAuth qui autorisent `thumbnails.set` (doc officielle). */
 export const THUMBNAIL_SCOPES: readonly string[] = [
   "https://www.googleapis.com/auth/youtube.upload",

@@ -22,7 +22,7 @@ import { trialFromOptions } from "@/lib/instagram-trial";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
 import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
-import { applyYouTubeThumbnail } from "@/lib/youtube-thumbnail-service";
+import { scheduleThumbnailAfterUpload } from "@/lib/youtube-thumbnail-service";
 import { coverPlan, type CoverResult } from "@/lib/instagram-cover";
 import { notifyTelegram } from "@/lib/telegram";
 import { appUrl } from "@/lib/app-url";
@@ -261,10 +261,11 @@ async function processTarget(postTargetId: string): Promise<void> {
       },
     });
 
-    // Miniature personnalisée (§37) : posée dès que la vidéo existe, APRÈS l'avoir marquée publiée.
-    // `applyYouTubeThumbnail` ne lève jamais : un échec ne touche ni la vidéo ni ce job.
+    // Miniature personnalisée (§37) : posée dès que YouTube a fini de traiter la vidéo (avant, il la
+    // refuse en 403), APRÈS avoir marqué la vidéo publiée. Ne lève jamais : un échec ne touche ni la
+    // vidéo ni ce job.
     if (target.coverMediaAssetId || target.thumbnailStatus === "PENDING") {
-      thumbnail = (await applyYouTubeThumbnail(postTargetId, { attempt: 1, justUploaded: true })).status;
+      thumbnail = (await scheduleThumbnailAfterUpload(postTargetId)).status;
     }
   } else {
     // TikTok (vidéo ou photo) : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas

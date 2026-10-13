@@ -23,7 +23,7 @@ import { describeDelivery, readDelivery, type DeliveryPath } from "@/lib/deliver
 import { fetchYouTubeVideoSummary } from "@/lib/providers/youtube";
 import { freshYouTubeAccessToken, type YouTubeAccountTokens } from "@/lib/youtube-token";
 import { YOUTUBE_PRIVACY_STATUSES, youtubePrivacyFromOptions } from "@/lib/youtube-options";
-import { requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
+import { PROCESSING_NOTE, requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
 import { coverTimeFromOptions, readCoverResult, type CoverResult } from "@/lib/instagram-cover";
 import { summarizeApiError } from "@/lib/youtube-thumbnail";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
@@ -376,6 +376,12 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                   name: t.coverMedia ? mediaName(t.coverMedia.storageKey) : undefined,
                   status: t.thumbnailStatus ?? "PENDING",
                   error: t.thumbnailError ?? undefined,
+                  note:
+                    (t.thumbnailStatus ?? "PENDING") === "PENDING" && !t.thumbnailError
+                      ? t.status === "PUBLISHED"
+                        ? PROCESSING_NOTE
+                        : "Sera posée après la mise en ligne de la vidéo, dès que YouTube a fini de la traiter."
+                      : undefined,
                   api_error: t.thumbnailStatus !== "SET" ? thumbnailApiErrors.get(t.id) : undefined,
                   set_at: fmt(t.thumbnailSetAt) ?? undefined,
                 }
@@ -548,7 +554,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Poser la miniature d'un Short YouTube",
       description:
-        "Pose ou remplace la miniature personnalisée de la vidéo YouTube d'un post Social Master — notamment d'une vidéo DÉJÀ publiée (corriger d'anciens Shorts). media_id = une IMAGE de la médiathèque (envoyée avec upload_local_media ou import_media_from_url). Vidéo publiée : envoi immédiat à YouTube, résultat SET, FAILED (raison claire : chaîne non éligible ou non vérifiée, image invalide…) ou PENDING (erreur passagère : nouvel essai automatique dans 5 min, suivre avec get_post). Vidéo pas encore publiée : l'image est retenue et posée juste après la mise en ligne. Change ce que voient les spectateurs : confirmer avec l'utilisateur avant d'appeler.",
+        "Pose ou remplace la miniature personnalisée de la vidéo YouTube d'un post Social Master — notamment d'une vidéo DÉJÀ publiée (corriger d'anciens Shorts). media_id = une IMAGE de la médiathèque (envoyée avec upload_local_media ou import_media_from_url). Vidéo publiée et traitée par YouTube : envoi immédiat, résultat SET, FAILED (raison claire : chaîne non éligible ou non vérifiée, image invalide…) ou PENDING (erreur passagère : nouvel essai automatique dans 5 min). Vidéo encore en traitement (YouTube refuse alors toute miniature) ou pas encore publiée : PENDING, l'image est posée dès que la vidéo est prête — suivre avec get_post. Change ce que voient les spectateurs : confirmer avec l'utilisateur avant d'appeler.",
       inputSchema: {
         post_id: z.string().min(1),
         media_id: z.string().min(1).describe("Image de la médiathèque (JPEG ou PNG idéalement, 1080×1920 pour un Short)"),
