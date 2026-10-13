@@ -39,6 +39,7 @@ function instructions(app: string): string {
   return `Social Master planifie les publications Instagram, TikTok et YouTube Shorts de l'utilisateur. Adresse de l'app : ${app} (seule adresse valide — ne pas en proposer d'autre).
 - Les heures sont TOUJOURS exprimées dans le fuseau de l'utilisateur (indiqué par get_overview), au format « AAAA-MM-JJTHH:mm » en entrée.
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
+- YouTube programmé (vidéo publique, au moins 15 min à l'avance) : la vidéo est envoyée tout de suite chez YouTube, en privé avec la date de publication ; YouTube la publie lui-même à l'heure prévue, miniature déjà posée.
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Miniature d'un Short YouTube : une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master juste après la mise en ligne ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée. Son état est dans get_post (youtube_thumbnail) et ne fait jamais échouer la vidéo. Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
@@ -78,12 +79,17 @@ async function readTikTokReception(account: TikTokAccountTokens, publishId: stri
  * état de l'envoi et URLs des miniatures servies — pour vérifier qu'une miniature personnalisée a pris.
  * Jamais bloquant : erreur lisible si YouTube ne répond pas.
  */
-async function readYouTubeLive(account: YouTubeAccountTokens, videoId: string) {
+async function readYouTubeLive(account: YouTubeAccountTokens, videoId: string, fmtIso: (iso: string) => string) {
   try {
     const token = await freshYouTubeAccessToken(account);
     const video = await fetchYouTubeVideoSummary(token, videoId, AbortSignal.timeout(5000));
     if (!video) return { error: "Vidéo introuvable sur YouTube (supprimée ?)." };
-    return { privacy_status: video.privacyStatus, upload_status: video.uploadStatus, thumbnails: video.thumbnails };
+    return {
+      privacy_status: video.privacyStatus,
+      upload_status: video.uploadStatus,
+      ...(video.publishAt ? { publish_at: fmtIso(video.publishAt) } : {}),
+      thumbnails: video.thumbnails,
+    };
   } catch (err) {
     return { error: `Lecture YouTube impossible pour l'instant : ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -296,8 +302,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       const youtubeLive = new Map(
         await Promise.all(
           post.postTargets
-            .filter((t) => t.platform === "YOUTUBE" && t.status === "PUBLISHED" && t.platformPostId)
-            .map(async (t) => [t.id, await readYouTubeLive(t.socialAccount, t.platformPostId!)] as const)
+            .filter((t) => t.platform === "YOUTUBE" && (t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED") && t.platformPostId)
+            .map(async (t) => [t.id, await readYouTubeLive(t.socialAccount, t.platformPostId!, (iso) => fmt(new Date(iso)) ?? iso)] as const)
         )
       );
       // Par où est passé le fichier de chaque livraison (journal d'activité, §36) — le plus récent gagne.
@@ -350,7 +356,12 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         targets: post.postTargets.map((t) => ({
           platform: t.platform,
           content_type: t.contentType,
-          mode: t.publishMode === "TIKTOK_DRAFT" ? "brouillon TikTok (inbox)" : "publication directe",
+          mode:
+            t.publishMode === "TIKTOK_DRAFT"
+              ? "brouillon TikTok (inbox)"
+              : t.status === "PLATFORM_SCHEDULED"
+                ? `programmée chez YouTube : vidéo déjà envoyée, privée, que YouTube rend publique le ${fmt(t.scheduledAt)}`
+                : "publication directe",
           status: t.status,
           scheduled_at: fmt(t.scheduledAt),
           published_at: fmt(t.publishedAt),
@@ -378,7 +389,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                   error: t.thumbnailError ?? undefined,
                   note:
                     (t.thumbnailStatus ?? "PENDING") === "PENDING" && !t.thumbnailError
-                      ? t.status === "PUBLISHED"
+                      ? t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED"
                         ? PROCESSING_NOTE
                         : "Sera posée après la mise en ligne de la vidéo, dès que YouTube a fini de la traiter."
                       : undefined,
@@ -587,7 +598,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Programmer un brouillon",
       description:
-        "Programme un brouillon à une heure locale. Instagram/YouTube partiront publiquement à cette heure ; TikTok reçoit le brouillon immédiatement. Confirmer avec l'utilisateur avant d'appeler.",
+        "Programme un brouillon à une heure locale. Instagram partira publiquement à cette heure ; TikTok reçoit le brouillon immédiatement. YouTube (vidéo publique programmée au moins 15 min à l'avance) : la vidéo part TOUT DE SUITE chez YouTube, en privé avec cette date de publication — sa miniature est posée dès qu'elle est traitée et c'est YouTube qui la rend publique à l'heure prévue (cible « PLATFORM_SCHEDULED » dans get_post, puis « PUBLISHED »). Confirmer avec l'utilisateur avant d'appeler.",
       inputSchema: { post_id: z.string().min(1), datetime: DATETIME_LOCAL },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
@@ -601,7 +612,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     "reschedule_post",
     {
       title: "Changer l'horaire",
-      description: "Déplace un post DÉJÀ programmé à une nouvelle heure locale (les décalages entre plateformes sont conservés).",
+      description:
+        "Déplace un post DÉJÀ programmé à une nouvelle heure locale (les décalages entre plateformes sont conservés). Une vidéo déjà programmée chez YouTube y est supprimée (elle n'a jamais été publique) puis renvoyée pour le nouvel horaire.",
       inputSchema: { post_id: z.string().min(1), datetime: DATETIME_LOCAL },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -615,7 +627,8 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     "unschedule_post",
     {
       title: "Annuler la programmation",
-      description: "Repasse un post programmé (ou en échec) en brouillon. Les plateformes déjà publiées ne sont pas touchées.",
+      description:
+        "Repasse un post programmé (ou en échec) en brouillon. Les plateformes déjà publiées ne sont pas touchées. Une vidéo déjà programmée chez YouTube (privée, pas encore publiée) y est supprimée ; si YouTube est injoignable, rien n'est modifié et l'outil renvoie une erreur.",
       inputSchema: { post_id: z.string().min(1) },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },

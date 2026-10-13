@@ -168,6 +168,8 @@ export type PublishYouTubeShortParams = {
   description: string; // légende + hashtags déjà composés par le worker ; ≤ 5000 (tronqué défensivement)
   contentType?: string; // MIME réel du média (défaut video/*)
   privacyStatus?: YouTubePrivacyStatus; // défaut public ; non répertorié/privé pour un essai (§37)
+  /** Programmation native (§38) : vidéo privée que YouTube rend publique à cette date. */
+  publishAt?: Date;
 };
 
 /**
@@ -197,7 +199,9 @@ async function initResumableUpload(params: PublishYouTubeShortParams): Promise<s
         // Publication directe à l'heure H (pg-boss), comme IG/TikTok — pas de status.publishAt natif
         // (déféré V2). Publique par défaut ; non répertoriée/privée si demandé (Short d'essai, §37).
         // selfDeclaredMadeForKids explicitement à false (requis).
-        privacyStatus: params.privacyStatus ?? "public",
+        // Programmation native (§38) : publishAt exige privacyStatus « private ».
+        privacyStatus: params.publishAt ? "private" : (params.privacyStatus ?? "public"),
+        ...(params.publishAt ? { publishAt: params.publishAt.toISOString() } : {}),
         selfDeclaredMadeForKids: false,
       },
     }),
@@ -355,6 +359,8 @@ export async function setYouTubeThumbnail(
 export type YouTubeVideoSummary = {
   privacyStatus?: string;
   uploadStatus?: string;
+  /** Date de publication programmée (ISO), tant que la vidéo est privée et programmée. */
+  publishAt?: string;
   thumbnails: ThumbnailUrls;
 };
 
@@ -376,13 +382,55 @@ export async function fetchYouTubeVideoSummary(
     throw new Error(`Lecture de la vidéo YouTube échouée (${res.status}): ${await res.text()}`);
   }
   const json = (await res.json()) as {
-    items?: Array<{ snippet?: { thumbnails?: unknown }; status?: { privacyStatus?: string; uploadStatus?: string } }>;
+    items?: Array<{
+      snippet?: { thumbnails?: unknown };
+      status?: { privacyStatus?: string; uploadStatus?: string; publishAt?: string };
+    }>;
   };
   const item = json.items?.[0];
   if (!item) return null;
   return {
     privacyStatus: item.status?.privacyStatus,
     uploadStatus: item.status?.uploadStatus,
+    publishAt: item.status?.publishAt,
     thumbnails: readThumbnailUrls(item.snippet?.thumbnails),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Annulation d'une vidéo programmée chez YouTube (CLAUDE.md §38) — jamais sur une vidéo publique :
+// l'appelant vérifie d'abord qu'elle est encore privée (videos.list).
+// ---------------------------------------------------------------------------
+
+/** Supprime une vidéo (videos.delete, ~50 unités). 204 attendu ; 404 = déjà absente, considéré comme fait. */
+export async function deleteYouTubeVideo(accessToken: string, videoId: string): Promise<void> {
+  const url = new URL(VIDEOS_URL);
+  url.searchParams.set("id", videoId);
+  const res = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Suppression de la vidéo YouTube échouée (${res.status}): ${await res.text()}`);
+  }
+}
+
+/**
+ * Retire la date de publication d'une vidéo programmée : elle reste privée, sans date (videos.update
+ * part=status remplace toute la partie status — publishAt absent = programmation retirée). Repli quand
+ * la suppression échoue : la vidéo ne sera alors jamais publiée toute seule.
+ */
+export async function unscheduleYouTubeVideo(accessToken: string, videoId: string): Promise<void> {
+  const url = new URL(VIDEOS_URL);
+  url.searchParams.set("part", "status");
+  const res = await fetch(url.toString(), {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify({ id: videoId, status: { privacyStatus: "private", selfDeclaredMadeForKids: false } }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Retrait de la programmation YouTube échoué (${res.status}): ${await res.text()}`);
+  }
 }

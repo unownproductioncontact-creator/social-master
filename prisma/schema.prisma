@@ -60,6 +60,10 @@ enum PostTargetStatus {
   PUBLISHED
   SENT_TO_INBOX
   FAILED
+  // YouTube détient déjà la vidéo, en privé avec une date de publication (status.publishAt) : c'est
+  // YouTube qui la rend publique à l'heure prévue ; une vérification passe ensuite la cible en
+  // PUBLISHED. Ne jamais la renvoyer (comme PUBLISHED). CLAUDE.md §38.
+  PLATFORM_SCHEDULED
 }
 
 enum PublishJobState {

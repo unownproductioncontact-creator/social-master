@@ -99,8 +99,9 @@ async function applyOnce(postTargetId: string, opts: ApplyOptions): Promise<Thum
     }
     return { status: "SKIPPED", reason: "aucune miniature demandée" };
   }
-  if (target.status !== "PUBLISHED" || !target.platformPostId) {
-    return { status: "SKIPPED", reason: "vidéo pas encore publiée (miniature posée juste après la mise en ligne)" };
+  // Vidéo chez YouTube : publiée, ou programmée là-bas (privée jusqu'à l'heure prévue, §38).
+  if ((target.status !== "PUBLISHED" && target.status !== "PLATFORM_SCHEDULED") || !target.platformPostId) {
+    return { status: "SKIPPED", reason: "vidéo pas encore envoyée à YouTube (miniature posée juste après l'envoi)" };
   }
   if (media.status !== "READY" || !media.mimeType.startsWith("image/")) {
     return fail(target, media.id, { retryable: false, code: "yt_thumb_not_image", message: "Le média choisi comme miniature n'est pas une image prête." }, opts, "");
@@ -323,9 +324,9 @@ export async function requestYouTubeThumbnailForUser(
     data: { coverMediaAssetId: media.id, thumbnailStatus: "PENDING", thumbnailError: null, thumbnailSetAt: null },
   });
 
-  if (target.status !== "PUBLISHED" || !target.platformPostId) {
+  if ((target.status !== "PUBLISHED" && target.status !== "PLATFORM_SCHEDULED") || !target.platformPostId) {
     return {
-      outcome: { status: "PENDING", message: "La vidéo n'est pas encore en ligne : la miniature sera posée juste après sa publication." },
+      outcome: { status: "PENDING", message: "La vidéo n'est pas encore chez YouTube : la miniature sera posée juste après son envoi." },
       videoUrl: null,
     };
   }

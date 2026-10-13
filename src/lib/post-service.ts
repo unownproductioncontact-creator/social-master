@@ -333,7 +333,12 @@ export async function unschedulePostForUser(userId: string, postId: string): Pro
   const post = await ownedPost(userId, postId);
   if (!post) return { error: "Post introuvable." };
   if (post.status === "PUBLISHED") return { error: "Un post déjà publié ne peut pas repasser en brouillon." };
-  await unschedulePost(postId);
+  try {
+    await unschedulePost(postId);
+  } catch (err) {
+    // Ex. vidéo programmée chez YouTube impossible à annuler (§38) : rien n'a été modifié.
+    return { error: err instanceof Error ? err.message : "Annulation impossible." };
+  }
   return {};
 }
 

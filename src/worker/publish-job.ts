@@ -22,6 +22,8 @@ import { trialFromOptions } from "@/lib/instagram-trial";
 import { publishYouTubeShort, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
 import { resolveYouTubeTitle } from "@/lib/content-type";
 import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
+import { CONFIRM_DELAY_MS, uploadAsScheduled } from "@/lib/youtube-scheduling";
+import { enqueueYouTubeConfirmation } from "@/lib/youtube-scheduled-video";
 import { scheduleThumbnailAfterUpload } from "@/lib/youtube-thumbnail-service";
 import { coverPlan, type CoverResult } from "@/lib/instagram-cover";
 import { notifyTelegram } from "@/lib/telegram";
@@ -98,8 +100,9 @@ async function processTarget(postTargetId: string): Promise<void> {
   });
 
   // Idempotence : la cible a disparu ou est déjà résolue → rien à faire (règle d'ingénierie n°1).
+  // PLATFORM_SCHEDULED : YouTube détient déjà la vidéo et la publiera lui-même (§38) — jamais de renvoi.
   if (!target) return;
-  if (target.status === "PUBLISHED" || target.status === "SENT_TO_INBOX") return;
+  if (target.status === "PUBLISHED" || target.status === "SENT_TO_INBOX" || target.status === "PLATFORM_SCHEDULED") return;
 
   await db.postTarget.update({ where: { id: postTargetId }, data: { status: "PROCESSING" } });
 
@@ -239,6 +242,11 @@ async function processTarget(postTargetId: string): Promise<void> {
     const title = resolveYouTubeTitle(titleOverride, caption);
     // Même prédicat que `publishYouTubeShort` (push par le Worker si MEDIA_PUSH_SECRET est posé).
     delivery = youtubeDelivery(mediaWorkerPushConfig() !== null);
+    // Programmation NATIVE (§38) : envoi anticipé (job lancé à la programmation) d'une vidéo publique →
+    // privée avec publishAt = heure prévue, c'est YouTube qui la publiera. Job « à l'heure » (ancien
+    // chemin, post à moins de 15 min) ou envoi anticipé arrivé trop tard → publication directe.
+    const privacy = youtubePrivacyFromOptions(target.platformOptions);
+    const scheduledOnYouTube = uploadAsScheduled(privacy, target.scheduledAt, new Date()) ? target.scheduledAt : null;
     const result = await publishYouTubeShort({
       accessToken: refreshed.access_token,
       storageKey: media.storageKey,
@@ -246,8 +254,40 @@ async function processTarget(postTargetId: string): Promise<void> {
       title,
       description: caption,
       contentType: media.mimeType,
-      privacyStatus: youtubePrivacyFromOptions(target.platformOptions),
+      privacyStatus: privacy,
+      publishAt: scheduledOnYouTube ?? undefined,
     });
+
+    if (scheduledOnYouTube) {
+      await db.postTarget.update({
+        where: { id: postTargetId },
+        data: {
+          status: "PLATFORM_SCHEDULED",
+          platformPostId: result.platformPostId,
+          platformPostUrl: result.platformPostUrl,
+          errorCode: null,
+          errorMessage: null,
+        },
+      });
+      await db.activityLog.create({
+        data: {
+          userId: target.post.userId,
+          entityType: "PostTarget",
+          entityId: postTargetId,
+          action: "youtube_scheduled",
+          detail: { postId: target.postId, videoId: result.platformPostId, publishAt: scheduledOnYouTube.toISOString(), delivery },
+        },
+      });
+      // Vérification de la publication 1 min après l'heure prévue (la réconciliation sert de filet).
+      await enqueueYouTubeConfirmation(postTargetId, result.platformPostId, new Date(scheduledOnYouTube.getTime() + CONFIRM_DELAY_MS)).catch(
+        (err) => console.error(`[publish-job] vérification de la publication YouTube non programmée (target ${postTargetId})`, err)
+      );
+      // Miniature : posée dès que YouTube a traité la vidéo, donc bien avant sa publication.
+      if (target.coverMediaAssetId || target.thumbnailStatus === "PENDING") {
+        await scheduleThumbnailAfterUpload(postTargetId);
+      }
+      return; // la publication et ses suites seront constatées à l'heure prévue
+    }
 
     await db.postTarget.update({
       where: { id: postTargetId },

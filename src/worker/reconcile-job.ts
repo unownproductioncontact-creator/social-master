@@ -8,6 +8,7 @@ import { fetchTikTokPublishStatus, type TikTokPublishStatus } from "@/lib/provid
 import { decideTikTokPendingDraft, tiktokReception } from "@/lib/tiktok-draft";
 import { freshTikTokAccessToken } from "@/lib/tiktok-token";
 import { afterTargetDelivered, composeCaption, markFailure } from "@/worker/publish-job";
+import { runYouTubePublicationCheck } from "@/worker/youtube-publication-job";
 
 /**
  * Suivi d'un brouillon TikTok transmis (publish_id connu) mais pas encore confirmé : on interroge TikTok
@@ -83,6 +84,9 @@ async function followUpTikTokDraft(postTargetId: string): Promise<boolean> {
 
 const STUCK_WAITING_MINUTES = 10;
 const STUCK_PROCESSING_MINUTES = 15;
+/** Vidéo programmée chez YouTube toujours pas constatée publiée longtemps après l'heure (§38) : au-delà
+ * de la fenêtre de vérification normale (~1 h), la réconciliation fait une dernière lecture. */
+const STUCK_PLATFORM_SCHEDULED_MINUTES = 75;
 
 /**
  * Filet de sécurité (règle d'ingénierie n°3), exécuté toutes les 5 min via boss.schedule().
@@ -145,6 +149,23 @@ export async function runReconciliation(): Promise<void> {
   if (interrupted > 0) {
     await notifyTelegram(
       `⚠️ Réconciliation : ${interrupted} publication(s) interrompue(s) en plein vol — vérification manuelle requise (voir Historique).`
+    );
+  }
+
+  // 3. Vidéos programmées chez YouTube dont la vérification n'a pas conclu (job perdu, service endormi) :
+  //    une dernière lecture — publique → PUBLISHED ; supprimée ou toujours privée → échec expliqué ;
+  //    date déplacée dans Studio → l'heure en base suit (et sort de cette sélection).
+  const scheduledOnYouTube = await db.postTarget.findMany({
+    where: {
+      status: "PLATFORM_SCHEDULED",
+      scheduledAt: { lt: new Date(Date.now() - STUCK_PLATFORM_SCHEDULED_MINUTES * 60 * 1000) },
+      platformPostId: { not: null },
+    },
+    select: { id: true, platformPostId: true },
+  });
+  for (const target of scheduledOnYouTube) {
+    await runYouTubePublicationCheck({ postTargetId: target.id, videoId: target.platformPostId!, check: 1 }, { final: true }).catch((err) =>
+      console.error(`[reconcile] vérification de la vidéo programmée YouTube échouée (target ${target.id})`, err)
     );
   }
 }

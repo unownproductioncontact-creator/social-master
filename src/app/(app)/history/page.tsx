@@ -69,7 +69,8 @@ export default async function HistoryPage(props: PageProps<"/history">) {
   const now = new Date();
   const where: Prisma.PostTargetWhereInput = { post: { userId: session.userId } };
   if (filter === "upcoming") {
-    where.status = { in: ["PENDING", "PROCESSING"] };
+    // PLATFORM_SCHEDULED : vidéo déjà chez YouTube, publiée par YouTube à l'heure prévue (§38) — à venir aussi.
+    where.status = { in: ["PENDING", "PROCESSING", "PLATFORM_SCHEDULED"] };
     where.OR = [{ scheduledAt: { gte: now } }, { scheduledAt: null, post: { scheduledAt: { gte: now } } }];
   } else if (filter === "failed") {
     where.status = "FAILED";

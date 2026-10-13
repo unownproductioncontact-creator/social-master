@@ -10,6 +10,7 @@ import {
   MEDIA_IMPORT_QUEUE,
   ORPHAN_SWEEP_QUEUE,
   YOUTUBE_THUMBNAIL_QUEUE,
+  YOUTUBE_PUBLICATION_QUEUE,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
@@ -20,6 +21,8 @@ import { runMediaImport } from "@/worker/media-import-job";
 import { runOrphanSweep } from "@/worker/orphan-sweep-job";
 import { runYouTubeThumbnailRetry } from "@/worker/youtube-thumbnail-job";
 import type { ThumbnailJobData } from "@/lib/youtube-thumbnail-service";
+import { runYouTubePublicationCheck } from "@/worker/youtube-publication-job";
+import type { PublicationJobData } from "@/lib/youtube-scheduled-video";
 
 let started = false;
 
@@ -60,6 +63,10 @@ export async function startWorker(): Promise<void> {
   // Nouvel essai UNIQUE d'une miniature YouTube après une erreur passagère (CLAUDE.md §37) : le job
   // est programmé 5 min plus tard par youtube-thumbnail-service ; pas de relance pg-boss en plus.
   await boss.createQueue(YOUTUBE_THUMBNAIL_QUEUE, { retryLimit: 0, expireInSeconds: 300 });
+
+  // Vérification de la publication des vidéos programmées chez YouTube (CLAUDE.md §38) : chaque job
+  // programme lui-même le suivant ; la réconciliation rattrape un job perdu.
+  await boss.createQueue(YOUTUBE_PUBLICATION_QUEUE, { retryLimit: 1, retryDelay: 60, expireInSeconds: 300 });
 
   await boss.work(
     PUBLISH_QUEUE,
@@ -103,7 +110,15 @@ export async function startWorker(): Promise<void> {
     }
   );
 
+  await boss.work(
+    YOUTUBE_PUBLICATION_QUEUE,
+    { batchSize: 1 },
+    async ([job]: Job<PublicationJobData>[]) => {
+      await runYouTubePublicationCheck(job.data);
+    }
+  );
+
   console.log(
-    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import, youtube-thumbnail)"
+    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import, youtube-thumbnail, youtube-publication)"
   );
 }

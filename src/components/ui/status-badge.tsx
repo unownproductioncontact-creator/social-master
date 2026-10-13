@@ -47,12 +47,13 @@ export function StatusBadge({
 
 /**
  * Tonalité pour un statut Post (DRAFT/SCHEDULED/PARTIALLY_PUBLISHED/PUBLISHED/FAILED)
- * ou PostTarget (PENDING/PROCESSING/PUBLISHED/SENT_TO_INBOX/FAILED).
+ * ou PostTarget (PENDING/PROCESSING/PUBLISHED/SENT_TO_INBOX/PLATFORM_SCHEDULED/FAILED).
  * Tout statut inconnu retombe sur « muted ».
  */
 export function postStatusTone(status: string): StatusTone {
   switch (status) {
     case "SCHEDULED":
+    case "PLATFORM_SCHEDULED":
       return "scheduled";
     case "PENDING":
     case "PROCESSING":
@@ -95,6 +96,9 @@ export function postStatusLabel(status: string): string {
       return "En cours";
     case "SENT_TO_INBOX":
       return "À finaliser sur TikTok";
+    case "PLATFORM_SCHEDULED":
+      // Vidéo déjà chez YouTube, privée : YouTube la publie lui-même à l'heure prévue (§38).
+      return "Programmé sur YouTube";
     default:
       return status;
   }

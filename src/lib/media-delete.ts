@@ -46,7 +46,12 @@ export async function deleteMediaAssetForUser(
     // du delete du MediaAsset, l'historique du post est préservé.
     if (post.status !== "DRAFT" && post.status !== "SCHEDULED") continue;
     if (post.status === "SCHEDULED") {
-      await unschedulePost(postId); // annule les jobs pg-boss WAITING/ACTIVE avant suppression
+      // Annule les jobs pg-boss WAITING/ACTIVE (et une vidéo programmée chez YouTube, §38) avant suppression.
+      try {
+        await unschedulePost(postId);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Annulation de la programmation impossible." };
+      }
     }
     await db.post.delete({ where: { id: postId } });
   }

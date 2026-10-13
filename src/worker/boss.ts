@@ -10,6 +10,7 @@ export const MEDIA_CLEANUP_QUEUE = "media-cleanup";
 export const MEDIA_IMPORT_QUEUE = "media-import";
 export const ORPHAN_SWEEP_QUEUE = "orphan-sweep";
 export const YOUTUBE_THUMBNAIL_QUEUE = "youtube-thumbnail";
+export const YOUTUBE_PUBLICATION_QUEUE = "youtube-publication";
 
 // Une seule instance dans tout le process (web + worker in-process, voir instrumentation.ts).
 declare global {

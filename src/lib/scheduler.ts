@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import type { Platform } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { checkTikTokDraftCapacityAt } from "@/lib/quota";
+import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
+import { schedulesOnYouTube } from "@/lib/youtube-scheduling";
+import { cancelScheduledYouTubeVideos } from "@/lib/youtube-scheduled-video";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 
 type SchedulePostResult = { error?: string };
@@ -71,6 +74,19 @@ export async function schedulePost(
     options?.immediate === true || (t.platform === "TIKTOK" && t.publishMode === "TIKTOK_DRAFT");
   const effectiveTimeFor = (t: SchedulableTarget): Date =>
     isImmediateTarget(t) ? now : targetTimes?.[t.platform] ?? scheduledAt;
+  // 📅 YOUTUBE = PROGRAMMATION NATIVE (§38) : une vidéo publique programmée au moins 15 min à l'avance
+  // part TOUT DE SUITE chez YouTube (job immédiat), privée avec publishAt = son horaire, que garde
+  // PostTarget.scheduledAt. YouTube la publie lui-même ; sa miniature est posée avant.
+  const jobTimeFor = (t: SchedulableTarget): Date =>
+    t.platform === "YOUTUBE" &&
+    schedulesOnYouTube({
+      privacy: youtubePrivacyFromOptions(t.platformOptions),
+      publishAt: effectiveTimeFor(t),
+      now,
+      immediate: isImmediateTarget(t),
+    })
+      ? now
+      : effectiveTimeFor(t);
 
   // La validation « ≥ 60s dans le futur » ne concerne QUE les cibles réellement PROGRAMMÉES (pas les
   // dépôts immédiats) : mesurée sur la cible programmée la plus tôt. Si toutes les cibles sont
@@ -113,12 +129,15 @@ export async function schedulePost(
 
       for (const target of schedulableTargets) {
         const idempotencyKey = randomUUID();
+        // Horaire de PUBLICATION de la cible (affiché, envoyé à YouTube en publishAt) ≠ heure d'exécution
+        // du job : identiques, sauf programmation native YouTube (job tout de suite, §38).
         const targetTime = effectiveTimeFor(target);
+        const runAt = jobTimeFor(target);
 
         await tx.publishJob.create({
           data: {
             postTargetId: target.id,
-            runAt: targetTime,
+            runAt,
             idempotencyKey,
             state: "WAITING",
           },
@@ -127,8 +146,19 @@ export async function schedulePost(
         await tx.postTarget.update({
           where: { id: target.id },
           // Nouvel envoi = nouveau publish_id TikTok : on oublie celui d'une tentative précédente
-          // (sinon le worker reprendrait l'attente d'un envoi mort au lieu de renvoyer, §27).
-          data: { status: "PENDING", scheduledAt: targetTime, tiktokPublishId: null, tiktokUploadedAt: null },
+          // (sinon le worker reprendrait l'attente d'un envoi mort au lieu de renvoyer, §27). Idem pour
+          // une ancienne vidéo YouTube en échec (§38) et l'état de sa miniature, à reposer sur la nouvelle.
+          data: {
+            status: "PENDING",
+            scheduledAt: targetTime,
+            tiktokPublishId: null,
+            tiktokUploadedAt: null,
+            platformPostId: null,
+            platformPostUrl: null,
+            ...(target.platform === "YOUTUBE" && target.coverMediaAssetId
+              ? { thumbnailStatus: "PENDING" as const, thumbnailError: null, thumbnailSetAt: null }
+              : {}),
+          },
         });
 
         await boss.send(
@@ -136,7 +166,7 @@ export async function schedulePost(
           { postTargetId: target.id, idempotencyKey },
           {
             id: idempotencyKey,
-            startAfter: targetTime,
+            startAfter: runAt,
             singletonKey: idempotencyKey,
             db: dbFromPrismaTx(tx),
           }
@@ -163,6 +193,11 @@ export async function schedulePost(
  */
 export async function unschedulePost(postId: string): Promise<void> {
   const boss = getBoss();
+
+  // Vidéo déjà programmée CHEZ YOUTUBE (§38) : annulée là-bas d'abord (supprimée — elle n'a jamais été
+  // publique). Si c'est impossible, l'erreur remonte AVANT toute écriture : la programmation reste
+  // intacte plutôt qu'un post « en brouillon » dont la vidéo partirait quand même à l'heure prévue.
+  await cancelScheduledYouTubeVideos(postId);
 
   const jobs = await db.publishJob.findMany({
     where: { postTarget: { postId } },
@@ -191,7 +226,20 @@ export async function unschedulePost(postId: string): Promise<void> {
         errorMessage: null,
         tiktokPublishId: null,
         tiktokUploadedAt: null,
+        // Vidéo YouTube annulée ci-dessus (ou en échec) : plus de référence (§38).
+        platformPostId: null,
+        platformPostUrl: null,
       },
+    });
+    // Miniature à reposer sur la prochaine vidéo envoyée (§37/§38).
+    await tx.postTarget.updateMany({
+      where: {
+        postId,
+        platform: "YOUTUBE",
+        status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] },
+        coverMediaAssetId: { not: null },
+      },
+      data: { thumbnailStatus: "PENDING", thumbnailError: null, thumbnailSetAt: null },
     });
     await tx.post.update({ where: { id: postId }, data: { status: "DRAFT", scheduledAt: null } });
   });
@@ -248,6 +296,10 @@ export async function reschedulePost(
     return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
   }
 
-  await unschedulePost(postId);
+  try {
+    await unschedulePost(postId);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Reprogrammation impossible." };
+  }
   return schedulePost(postId, newBase, scheduledTz, targetTimes);
 }

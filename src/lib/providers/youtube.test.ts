@@ -15,6 +15,8 @@ import {
   publishYouTubeShort,
   setYouTubeThumbnail,
   fetchYouTubeVideoSummary,
+  deleteYouTubeVideo,
+  unscheduleYouTubeVideo,
 } from "@/lib/providers/youtube";
 import { classifyThumbnailError } from "@/lib/youtube-thumbnail";
 import { resolveYouTubeTitle, youtubeTitleFallback } from "@/lib/content-type";
@@ -404,5 +406,51 @@ describe("Miniature personnalisée et lecture de la vidéo (§37)", () => {
     calls = [];
     mockFetch(() => res({ items: [] }));
     expect(await fetchYouTubeVideoSummary("at", "gone")).toBeNull();
+  });
+});
+
+describe("Programmation native (§38)", () => {
+  it("publishAt : vidéo envoyée en PRIVÉ avec la date de publication en ISO", async () => {
+    mockFetch((url, init) =>
+      (init?.method ?? "GET") === "POST"
+        ? res({}, { headers: { location: "https://upload.example/session" } })
+        : res({ id: "vid_sched" })
+    );
+    const at = new Date("2026-10-14T16:00:00Z");
+    await publishYouTubeShort({
+      accessToken: "at",
+      storageKey: "media/u/clip.mp4",
+      videoSizeBytes: 10,
+      title: "Programmé",
+      description: "d",
+      contentType: "video/mp4",
+      privacyStatus: "public",
+      publishAt: at,
+    });
+    const status = JSON.parse(calls.find((c) => c.method === "POST")!.body!).status;
+    expect(status).toEqual({ privacyStatus: "private", publishAt: "2026-10-14T16:00:00.000Z", selfDeclaredMadeForKids: false });
+  });
+
+  it("annulation : DELETE videos?id= ; 404 (déjà absente) n'est pas une erreur", async () => {
+    mockFetch(() => res("", { status: 204 }));
+    await deleteYouTubeVideo("at", "vid_sched");
+    const url = new URL(calls[0].url);
+    expect(calls[0].method).toBe("DELETE");
+    expect(url.origin + url.pathname).toBe("https://www.googleapis.com/youtube/v3/videos");
+    expect(url.searchParams.get("id")).toBe("vid_sched");
+
+    mockFetch(() => res({ error: { code: 404 } }, { ok: false, status: 404 }));
+    await expect(deleteYouTubeVideo("at", "gone")).resolves.toBeUndefined();
+    mockFetch(() => res({ error: { code: 403 } }, { ok: false, status: 403 }));
+    await expect(deleteYouTubeVideo("at", "x")).rejects.toThrow(/\(403\)/);
+  });
+
+  it("repli : videos.update part=status → privée SANS date (publishAt retiré)", async () => {
+    mockFetch(() => res({ id: "vid_sched" }));
+    await unscheduleYouTubeVideo("at", "vid_sched");
+    const call = calls[0];
+    expect(call.method).toBe("PUT");
+    expect(new URL(call.url).searchParams.get("part")).toBe("status");
+    expect(JSON.parse(call.body!)).toEqual({ id: "vid_sched", status: { privacyStatus: "private", selfDeclaredMadeForKids: false } });
   });
 });
