@@ -25,7 +25,7 @@ import { freshYouTubeAccessToken, type YouTubeAccountTokens } from "@/lib/youtub
 import { YOUTUBE_PRIVACY_STATUSES, youtubePrivacyFromOptions } from "@/lib/youtube-options";
 import { PROCESSING_NOTE, requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
 import { coverTimeFromOptions, readCoverResult, type CoverResult } from "@/lib/instagram-cover";
-import { summarizeApiError } from "@/lib/youtube-thumbnail";
+import { shortsThumbnailApiEnabled, summarizeApiError } from "@/lib/youtube-thumbnail";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -42,7 +42,7 @@ function instructions(app: string): string {
 - YouTube programmé (vidéo publique, au moins 15 min à l'avance) : la vidéo est envoyée tout de suite chez YouTube, en privé avec la date de publication ; YouTube la publie lui-même à l'heure prévue, miniature déjà posée.
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
-- Miniature d'un Short YouTube : une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master juste après la mise en ligne ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée. Son état est dans get_post (youtube_thumbnail) et ne fait jamais échouer la vidéo. Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
+- Miniature d'un Short YouTube : ${shortsThumbnailApiEnabled() ? "une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master dès que YouTube a traité la vidéo ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée ; état dans get_post (youtube_thumbnail), jamais bloquant pour la vidéo." : "DÉSACTIVÉE — YouTube n'affiche pas (ni sur la chaîne, ni dans la recherche) une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026) ; elle s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer). Ne pas proposer youtube_thumbnail_media_id ni set_youtube_thumbnail pour un Short."} Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
 - Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel) et attends sa confirmation.`;
 }
 
@@ -388,7 +388,9 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                   status: t.thumbnailStatus ?? "PENDING",
                   error: t.thumbnailError ?? undefined,
                   note:
-                    (t.thumbnailStatus ?? "PENDING") === "PENDING" && !t.thumbnailError
+                    t.thumbnailStatus === "SET" && t.contentType === "YOUTUBE_SHORT"
+                      ? "Acceptée par l'API, mais YouTube ne l'affiche pas pour un Short (onglet Shorts, recherche) — vérifié les 13-14/10/2026 ; l'ajouter dans YouTube Studio pour qu'elle soit visible."
+                      : (t.thumbnailStatus ?? "PENDING") === "PENDING" && !t.thumbnailError
                       ? t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED"
                         ? PROCESSING_NOTE
                         : "Sera posée après la mise en ligne de la vidéo, dès que YouTube a fini de la traiter."
@@ -506,7 +508,9 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           .nullable()
           .optional()
           .describe(
-            "Miniature personnalisée du Short : media_id d'une IMAGE de la médiathèque (JPEG ou PNG, idéalement 1080×1920 ; recompressée en JPEG si plus de 2 Mo, jamais recadrée). Posée juste après la mise en ligne ; un échec ne fait jamais échouer la vidéo (état dans get_post). null = retirer ; absent en modification = inchangée"
+            shortsThumbnailApiEnabled()
+              ? "Miniature personnalisée du Short : media_id d'une IMAGE de la médiathèque (JPEG ou PNG, idéalement 1080×1920 ; recompressée en JPEG si plus de 2 Mo, jamais recadrée). Posée dès que YouTube a traité la vidéo ; un échec ne fait jamais échouer la vidéo (état dans get_post). null = retirer ; absent en modification = inchangée"
+              : "DÉSACTIVÉ pour les Shorts (refusé) : YouTube n'affiche pas une miniature de Short envoyée par l'API. La miniature d'un Short s'ajoute dans YouTube Studio sur ordinateur."
           ),
         instagram_collaborators: z
           .array(z.string())
@@ -565,7 +569,9 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Poser la miniature d'un Short YouTube",
       description:
-        "Pose ou remplace la miniature personnalisée de la vidéo YouTube d'un post Social Master — notamment d'une vidéo DÉJÀ publiée (corriger d'anciens Shorts). media_id = une IMAGE de la médiathèque (envoyée avec upload_local_media ou import_media_from_url). Vidéo publiée et traitée par YouTube : envoi immédiat, résultat SET, FAILED (raison claire : chaîne non éligible ou non vérifiée, image invalide…) ou PENDING (erreur passagère : nouvel essai automatique dans 5 min). Vidéo encore en traitement (YouTube refuse alors toute miniature) ou pas encore publiée : PENDING, l'image est posée dès que la vidéo est prête — suivre avec get_post. Change ce que voient les spectateurs : confirmer avec l'utilisateur avant d'appeler.",
+        shortsThumbnailApiEnabled()
+          ? "Pose ou remplace la miniature personnalisée de la vidéo YouTube d'un post Social Master — notamment d'une vidéo DÉJÀ publiée (corriger d'anciens Shorts). media_id = une IMAGE de la médiathèque (envoyée avec upload_local_media ou import_media_from_url). Vidéo publiée et traitée par YouTube : envoi immédiat, résultat SET, FAILED (raison claire : chaîne non éligible ou non vérifiée, image invalide…) ou PENDING (erreur passagère : nouvel essai automatique dans 5 min). Vidéo encore en traitement (YouTube refuse alors toute miniature) ou pas encore publiée : PENDING, l'image est posée dès que la vidéo est prête — suivre avec get_post. Change ce que voient les spectateurs : confirmer avec l'utilisateur avant d'appeler."
+          : "DÉSACTIVÉ pour les Shorts (renvoie une erreur) : YouTube n'affiche pas une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026). La miniature d'un Short s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer).",
       inputSchema: {
         post_id: z.string().min(1),
         media_id: z.string().min(1).describe("Image de la médiathèque (JPEG ou PNG idéalement, 1080×1920 pour un Short)"),

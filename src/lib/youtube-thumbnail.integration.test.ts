@@ -48,7 +48,6 @@ const UPLOAD_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https:
 
 let userId: string;
 let youtubeAccountId: string;
-let instagramAccountId: string;
 let videoId: string;
 let thumbId: string;
 let otherThumbId: string;
@@ -87,7 +86,13 @@ function apiError(status: number, reason: string) {
   );
 }
 
+// Ce fichier teste le circuit complet de la miniature, coupé par défaut pour les Shorts (§37, 14/10/2026) :
+// on le rallume ici comme le ferait YOUTUBE_SHORTS_THUMBNAIL_API=1 sur Render ; le comportement coupé
+// (défaut) est testé à part en fin de fichier.
+const savedSwitch = process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+
 beforeAll(async () => {
+  process.env.YOUTUBE_SHORTS_THUMBNAIL_API = "1";
   tinyJpeg = await sharp({ create: { width: 108, height: 192, channels: 3, background: "#ff0055" } }).jpeg().toBuffer();
   await db.user.deleteMany({ where: { email: TEST_EMAIL } });
   const user = await db.user.create({ data: { email: TEST_EMAIL, passwordHash: "x", name: "Vitest" } });
@@ -105,11 +110,10 @@ beforeAll(async () => {
       },
     })
   ).id;
-  instagramAccountId = (
-    await db.socialAccount.create({
-      data: { userId, platform: "INSTAGRAM", platformAccountId: `ig_vitest_${user.id}`, username: "moha_test", accessTokenEnc: "x" },
-    })
-  ).id;
+  // Compte Instagram : nécessaire aux brouillons Reel (couverture), retrouvé par saveDraftForUser.
+  await db.socialAccount.create({
+    data: { userId, platform: "INSTAGRAM", platformAccountId: `ig_vitest_${user.id}`, username: "moha_test", accessTokenEnc: "x" },
+  });
   videoId = await createMedia("short.mp4", "video/mp4");
   thumbId = await createMedia("short - miniature.jpg", "image/jpeg");
   otherThumbId = await createMedia("autre miniature.png", "image/png");
@@ -129,6 +133,8 @@ function videoState(uploadStatus: string) {
 }
 
 afterAll(async () => {
+  if (savedSwitch === undefined) delete process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+  else process.env.YOUTUBE_SHORTS_THUMBNAIL_API = savedSwitch;
   await db.user.deleteMany({ where: { email: TEST_EMAIL } }); // cascade : comptes, médias, posts, cibles, journal
 });
 
@@ -462,6 +468,40 @@ describe("ménage des médias : une image de miniature n'est jamais prise pour u
       expect(await db.mediaAsset.findUnique({ where: { id: videoId } })).toBeNull(); // la vidéo, elle, part
     } finally {
       await db.user.update({ where: { id: userId }, data: { mediaRetentionDays: null } });
+    }
+  });
+});
+
+describe("coupée par défaut pour les Shorts (variable absente, décision du 14/10/2026)", () => {
+  it("brouillon refusé, set_youtube_thumbnail refusé, demande en attente close sans aucun appel à YouTube", async () => {
+    delete process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+    try {
+      // Vidéo propre à ce test : celles du dessus peuvent avoir été purgées par les tests de rétention.
+      videoId = await createMedia("short-coupé.mp4", "video/mp4");
+      const draft = await saveDraftForUser(userId, {
+        caption: "Short",
+        hashtags: [],
+        mediaAssetIds: [videoId],
+        targetInstagram: false,
+        targetInstagramStory: false,
+        targetTiktok: false,
+        targetYoutube: true,
+        youtubeThumbnailMediaId: thumbId,
+      });
+      expect(draft.error).toMatch(/Miniature de Short désactivée/);
+
+      const { postId, targetId } = await publishedYouTubeTarget(thumbId, "PENDING");
+      expect((await requestYouTubeThumbnailForUser(userId, postId, thumbId)).error).toMatch(/Miniature de Short désactivée/);
+
+      expect((await scheduleThumbnailAfterUpload(targetId)).status).toBe("SKIPPED");
+      expect((await applyYouTubeThumbnail(targetId, { attempt: 1 })).status).toBe("SKIPPED");
+      expect(setYouTubeThumbnail).not.toHaveBeenCalled();
+      expect(sent).toHaveLength(0);
+      const target = await db.postTarget.findUniqueOrThrow({ where: { id: targetId } });
+      expect(target.thumbnailStatus).toBe("FAILED");
+      expect(target.thumbnailError).toMatch(/YouTube Studio sur ordinateur/);
+    } finally {
+      process.env.YOUTUBE_SHORTS_THUMBNAIL_API = "1";
     }
   });
 });

@@ -22,6 +22,25 @@ export const YOUTUBE_THUMBNAIL_TYPES: readonly string[] = ["image/jpeg", "image/
 /** Qualités JPEG essayées dans l'ordre quand l'image dépasse la limite (dimensions conservées). */
 export const THUMBNAIL_JPEG_QUALITIES: readonly number[] = [90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40];
 
+/**
+ * Miniature envoyée par l'API à un SHORT : COUPÉE par défaut (décision du user, 14/10/2026). Constaté les
+ * 13 et 14/10 : YouTube accepte `thumbnails.set` sur un Short mais ne l'affiche ni sur l'onglet Shorts de
+ * la chaîne ni dans la recherche (image verticale séparée que l'API ne touche pas), et Studio reste
+ * bloqué sur « Miniature ajoutée — Importation… ». La variable `YOUTUBE_SHORTS_THUMBNAIL_API=1` (Render)
+ * la rallume le jour où Google ouvre les Shorts à l'API : tout le code est prêt et testé.
+ */
+export function shortsThumbnailApiEnabled(): boolean {
+  return process.env.YOUTUBE_SHORTS_THUMBNAIL_API === "1";
+}
+
+/** La miniature par l'API est-elle utilisable pour ce type de contenu YouTube ? */
+export function thumbnailApiAllowed(contentType: string): boolean {
+  return contentType !== "YOUTUBE_SHORT" || shortsThumbnailApiEnabled();
+}
+
+export const SHORTS_THUMBNAIL_DISABLED_MESSAGE =
+  "Miniature de Short désactivée : YouTube ne l'affiche pas quand elle est envoyée par l'API (ni sur la chaîne, ni dans la recherche — vérifié les 13 et 14/10/2026). À ajouter dans YouTube Studio sur ordinateur : Contenus → Shorts → le Short → Miniature → Importer.";
+
 /** Délai du nouvel essai automatique (un seul) après une erreur 5xx, 429 ou réseau. */
 export const THUMBNAIL_RETRY_DELAY_MS = 5 * 60 * 1000;
 

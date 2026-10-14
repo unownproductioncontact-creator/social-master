@@ -116,7 +116,12 @@ function publishJob(postTargetId: string, idempotencyKey: string) {
   }>[];
 }
 
+// La miniature des Shorts est coupée par défaut (§37) ; on la rallume ici pour vérifier qu'un envoi
+// programmé déclenche bien son circuit (comme YOUTUBE_SHORTS_THUMBNAIL_API=1 sur Render).
+const savedSwitch = process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+
 beforeAll(async () => {
+  process.env.YOUTUBE_SHORTS_THUMBNAIL_API = "1";
   await db.user.deleteMany({ where: { email: TEST_EMAIL } });
   const user = await db.user.create({ data: { email: TEST_EMAIL, passwordHash: "x", name: "Vitest" } });
   userId = user.id;
@@ -160,6 +165,8 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  if (savedSwitch === undefined) delete process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+  else process.env.YOUTUBE_SHORTS_THUMBNAIL_API = savedSwitch;
   await db.user.deleteMany({ where: { email: TEST_EMAIL } });
 });
 

@@ -16,6 +16,7 @@ import {
   computeTikTokContentType,
   computeYouTubeContentType,
 } from "@/lib/content-type";
+import { SHORTS_THUMBNAIL_DISABLED_MESSAGE, thumbnailApiAllowed } from "@/lib/youtube-thumbnail";
 import {
   buildYouTubeOptions,
   YOUTUBE_PRIVACY_STATUSES,
@@ -160,8 +161,17 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   if (data.youtubeThumbnailMediaId && !data.targetYoutube) {
     return { error: "Une miniature YouTube demande de cocher YouTube." };
   }
-  const youtubeThumbnailId =
-    data.youtubeThumbnailMediaId === undefined ? (previous("YOUTUBE")?.coverMediaAssetId ?? null) : data.youtubeThumbnailMediaId;
+  // Shorts : miniature par l'API coupée (§37, 14/10/2026) — refus explicite, et une ancienne demande
+  // gardée sur le brouillon est oubliée (elle ne serait jamais affichée).
+  const youtubeThumbnailsUsable = !youtubeContentType || thumbnailApiAllowed(youtubeContentType);
+  if (data.youtubeThumbnailMediaId && !youtubeThumbnailsUsable) {
+    return { error: SHORTS_THUMBNAIL_DISABLED_MESSAGE };
+  }
+  const youtubeThumbnailId = !youtubeThumbnailsUsable
+    ? null
+    : data.youtubeThumbnailMediaId === undefined
+      ? (previous("YOUTUBE")?.coverMediaAssetId ?? null)
+      : data.youtubeThumbnailMediaId;
   const youtubePrivacy: YouTubePrivacyStatus =
     data.youtubePrivacy === undefined
       ? youtubePrivacyFromOptions(previous("YOUTUBE")?.platformOptions)

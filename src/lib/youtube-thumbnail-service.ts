@@ -12,8 +12,10 @@ import {
   processingDecision,
   PROCESSING_CHECK_INTERVAL_MS,
   PROCESSING_FIRST_CHECK_MS,
+  SHORTS_THUMBNAIL_DISABLED_MESSAGE,
   THUMBNAIL_RETRY_DELAY_MS,
   THUMBNAIL_SCOPE_MESSAGE,
+  thumbnailApiAllowed,
   type ThumbnailFailure,
   type ThumbnailUrls,
 } from "@/lib/youtube-thumbnail";
@@ -85,6 +87,8 @@ async function applyOnce(postTargetId: string, opts: ApplyOptions): Promise<Thum
     },
   });
   if (!target || target.platform !== "YOUTUBE") return { status: "SKIPPED", reason: "cible YouTube introuvable" };
+  // Shorts : miniature par l'API coupée (§37) — jamais d'appel ; une demande restée en attente est close.
+  if (!thumbnailApiAllowed(target.contentType)) return closeDisabledThumbnail(target.id, target.thumbnailStatus);
   if (opts.expectedMediaId && target.coverMediaAssetId !== opts.expectedMediaId) {
     return { status: "SKIPPED", reason: "miniature remplacée entre-temps" };
   }
@@ -203,6 +207,17 @@ async function log(
   });
 }
 
+/** Miniature coupée pour ce type de contenu : une demande encore en attente passe en échec expliqué. */
+async function closeDisabledThumbnail(postTargetId: string, status: string | null): Promise<ThumbnailOutcome> {
+  if (status === "PENDING") {
+    await db.postTarget.update({
+      where: { id: postTargetId },
+      data: { thumbnailStatus: "FAILED", thumbnailError: SHORTS_THUMBNAIL_DISABLED_MESSAGE },
+    });
+  }
+  return { status: "SKIPPED", reason: SHORTS_THUMBNAIL_DISABLED_MESSAGE };
+}
+
 async function enqueueProcessingCheck(postTargetId: string, mediaAssetId: string, check: number, delayMs: number): Promise<void> {
   const data: ThumbnailJobData = { postTargetId, mediaAssetId, kind: "processing", check };
   await getBoss().send(YOUTUBE_THUMBNAIL_QUEUE, data, { startAfter: new Date(Date.now() + delayMs) });
@@ -216,9 +231,10 @@ export async function scheduleThumbnailAfterUpload(postTargetId: string): Promis
   try {
     const target = await db.postTarget.findUnique({
       where: { id: postTargetId },
-      select: { platform: true, coverMediaAssetId: true, thumbnailStatus: true },
+      select: { platform: true, contentType: true, coverMediaAssetId: true, thumbnailStatus: true },
     });
     if (!target || target.platform !== "YOUTUBE") return { status: "SKIPPED", reason: "cible YouTube introuvable" };
+    if (!thumbnailApiAllowed(target.contentType)) return closeDisabledThumbnail(postTargetId, target.thumbnailStatus);
     // Image supprimée entre-temps (PENDING sans image) → applyYouTubeThumbnail le constate et l'explique.
     if (!target.coverMediaAssetId) return applyYouTubeThumbnail(postTargetId, { attempt: 1, justUploaded: true });
     await db.postTarget.updateMany({
@@ -313,6 +329,7 @@ export async function requestYouTubeThumbnailForUser(
   if (!post) return { error: "Post introuvable." };
   const target = post.postTargets[0];
   if (!target) return { error: "Ce post n'a pas de cible YouTube." };
+  if (!thumbnailApiAllowed(target.contentType)) return { error: SHORTS_THUMBNAIL_DISABLED_MESSAGE };
 
   const media = await db.mediaAsset.findFirst({ where: { id: mediaAssetId, userId } });
   if (!media) return { error: "Média introuvable." };

@@ -9,6 +9,8 @@ import {
   PROCESSING_MAX_CHECKS,
   readThumbnailUrls,
   summarizeApiError,
+  SHORTS_THUMBNAIL_DISABLED_MESSAGE,
+  thumbnailApiAllowed,
   ThumbnailImageError,
   YOUTUBE_THUMBNAIL_MAX_BYTES,
 } from "@/lib/youtube-thumbnail";
@@ -175,5 +177,22 @@ describe("processingDecision (attente du traitement de la vidéo)", () => {
     expect(processingDecision("failed", 1)).toBe("video_failed");
     expect(processingDecision("rejected", 3)).toBe("video_failed");
     expect(processingDecision("uploaded", PROCESSING_MAX_CHECKS)).toBe("give_up");
+  });
+});
+
+describe("miniature par l'API pour les Shorts : coupée par défaut (14/10/2026)", () => {
+  it("Short : refusée sans la variable, autorisée avec YOUTUBE_SHORTS_THUMBNAIL_API=1 ; autre contenu : toujours autorisée", () => {
+    const saved = process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+    try {
+      delete process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+      expect(thumbnailApiAllowed("YOUTUBE_SHORT")).toBe(false);
+      expect(thumbnailApiAllowed("YOUTUBE_VIDEO")).toBe(true);
+      process.env.YOUTUBE_SHORTS_THUMBNAIL_API = "1";
+      expect(thumbnailApiAllowed("YOUTUBE_SHORT")).toBe(true);
+      expect(SHORTS_THUMBNAIL_DISABLED_MESSAGE).toMatch(/YouTube Studio sur ordinateur/);
+    } finally {
+      if (saved === undefined) delete process.env.YOUTUBE_SHORTS_THUMBNAIL_API;
+      else process.env.YOUTUBE_SHORTS_THUMBNAIL_API = saved;
+    }
   });
 });
