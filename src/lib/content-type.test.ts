@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  computeFacebookContentType,
   computeInstagramContentType,
   computeTikTokContentType,
   computeYouTubeContentType,
@@ -113,5 +114,33 @@ describe("resolveYouTubeTitle", () => {
 
   it("tronque aussi un titre explicite trop long à 100 caractères", () => {
     expect(resolveYouTubeTitle("b".repeat(120), "légende")).toHaveLength(YOUTUBE_TITLE_MAX_LENGTH);
+  });
+});
+
+describe("computeFacebookContentType (§40)", () => {
+  const video = (width: number | null, height: number | null, durationSec: number | null) => ({ isVideo: true, width, height, durationSec });
+  const photo = { isVideo: false };
+
+  it("vidéo verticale de 3 à 90 s → Reel ; bornes comprises", () => {
+    expect(computeFacebookContentType([video(1080, 1920, 58)])).toBe("FACEBOOK_REEL");
+    expect(computeFacebookContentType([video(1080, 1920, 3)])).toBe("FACEBOOK_REEL");
+    expect(computeFacebookContentType([video(1080, 1920, 90)])).toBe("FACEBOOK_REEL");
+  });
+
+  it("horizontale, trop longue, trop courte ou dimensions inconnues → vidéo classique", () => {
+    expect(computeFacebookContentType([video(1920, 1080, 30)])).toBe("FACEBOOK_VIDEO");
+    expect(computeFacebookContentType([video(1080, 1920, 91)])).toBe("FACEBOOK_VIDEO");
+    expect(computeFacebookContentType([video(1080, 1920, 2)])).toBe("FACEBOOK_VIDEO");
+    expect(computeFacebookContentType([video(null, null, 30)])).toBe("FACEBOOK_VIDEO");
+    expect(computeFacebookContentType([video(1080, 1920, null)])).toBe("FACEBOOK_VIDEO");
+  });
+
+  it("une photo, 2 à 10 photos ; mélange ou plus de 10 → non pris en charge", () => {
+    expect(computeFacebookContentType([photo])).toBe("FACEBOOK_PHOTO");
+    expect(computeFacebookContentType([photo, photo, photo])).toBe("FACEBOOK_PHOTOS");
+    expect(computeFacebookContentType(Array.from({ length: 10 }, () => photo))).toBe("FACEBOOK_PHOTOS");
+    expect(computeFacebookContentType(Array.from({ length: 11 }, () => photo))).toBeNull();
+    expect(computeFacebookContentType([video(1080, 1920, 30), photo])).toBeNull();
+    expect(computeFacebookContentType([video(1080, 1920, 30), video(1080, 1920, 30)])).toBeNull();
   });
 });

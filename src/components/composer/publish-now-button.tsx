@@ -29,15 +29,17 @@ export function PublishNowButton({
 }: {
   onConfirm: () => void;
   disabled?: boolean;
-  platforms: { instagram?: boolean; tiktok?: boolean; youtube?: boolean };
+  platforms: { instagram?: boolean; tiktok?: boolean; youtube?: boolean; facebook?: boolean };
   size?: "default" | "sm";
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
 
-  const publicNames = [platforms.instagram && "Instagram", platforms.youtube && "YouTube"].filter(
+  const publicNames = [platforms.instagram && "Instagram", platforms.youtube && "YouTube", platforms.facebook && "Facebook"].filter(
     Boolean
   ) as string[];
+  const publicList =
+    publicNames.length > 1 ? `${publicNames.slice(0, -1).join(", ")} et ${publicNames[publicNames.length - 1]}` : publicNames[0];
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -53,7 +55,7 @@ export function PublishNowButton({
           <DialogDescription>
             La publication part <span className="font-medium text-foreground">immédiatement</span>.
             {publicNames.length > 0 && (
-              <> {publicNames.join(" et ")} {publicNames.length > 1 ? "sont publiés" : "est publié"} en public — action irréversible.</>
+              <> {publicList} {publicNames.length > 1 ? "sont publiés" : "est publié"} en public — action irréversible.</>
             )}
             {platforms.tiktok && <> La vidéo TikTok arrive en brouillon dans vos notifications.</>}
           </DialogDescription>

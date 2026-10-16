@@ -97,6 +97,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         targetInstagramStory: source.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
         targetTiktok: source.postTargets.some((t) => t.platform === "TIKTOK"),
         targetYoutube: source.postTargets.some((t) => t.platform === "YOUTUBE"),
+        targetFacebook: source.postTargets.some((t) => t.platform === "FACEBOOK"),
         youtubeTitle: (ytTarget?.platformOptions as { title?: string } | null)?.title ?? undefined,
         instagramCoverTimeMs:
           (igTarget?.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs ?? null,
@@ -129,6 +130,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
         tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
         youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
+        facebookConnected={accounts.some((a) => a.platform === "FACEBOOK")}
         timezone={timezone}
         initialPost={initialPost}
         initialScheduleLocal={defaultScheduleLocal(timezone, dateParam)}

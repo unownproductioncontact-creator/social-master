@@ -43,11 +43,12 @@ import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
  */
 
 function instructions(app: string): string {
-  return `Social Master planifie les publications Instagram, TikTok et YouTube Shorts de l'utilisateur. Adresse de l'app : ${app} (seule adresse valide — ne pas en proposer d'autre).
+  return `Social Master planifie les publications Instagram, TikTok, YouTube Shorts et Page Facebook de l'utilisateur. Adresse de l'app : ${app} (seule adresse valide — ne pas en proposer d'autre).
 - Les heures sont TOUJOURS exprimées dans le fuseau de l'utilisateur (indiqué par get_overview), au format « AAAA-MM-JJTHH:mm » en entrée.
 - TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
 - YouTube programmé (vidéo publique, au moins 15 min à l'avance) : la vidéo est envoyée tout de suite chez YouTube, en privé avec la date de publication ; YouTube la publie lui-même à l'heure prévue, miniature déjà posée.
-- Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
+- Instagram, YouTube et Facebook : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
+- Facebook (Page) : une vidéo verticale de 3 à 90 s part en Reel, une autre vidéo en vidéo classique ; une photo, ou plusieurs photos (2 à 10) dans une même publication. Même légende et hashtags que les autres plateformes.
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Miniature d'un Short YouTube : ${shortsThumbnailApiEnabled() ? "une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master dès que YouTube a traité la vidéo ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée ; état dans get_post (youtube_thumbnail), jamais bloquant pour la vidéo." : "DÉSACTIVÉE — YouTube n'affiche pas (ni sur la chaîne, ni dans la recherche) une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026) ; elle s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer). Ne pas proposer youtube_thumbnail_media_id ni set_youtube_thumbnail pour un Short."} Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
 - Vidéos déjà sur YouTube (publiées par Social Master ou non, chaîne connectée uniquement) : list_youtube_videos pour les retrouver, get_youtube_video pour lire titre/description/tags actuels, update_youtube_video pour changer titre, description, tags, visibilité ou date de publication d'une vidéo programmée. Le fichier vidéo lui-même ne peut pas être remplacé (YouTube ne le permet pas).
@@ -503,6 +504,10 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         instagram_story: z.boolean().default(false).describe("Publier en Story plutôt qu'en post/Reel (1 seul média)"),
         tiktok: z.boolean().default(false).describe("Envoi en brouillon dans la boîte de réception TikTok"),
         youtube: z.boolean().default(false).describe("YouTube Short (exactement 1 vidéo)"),
+        facebook: z
+          .boolean()
+          .default(false)
+          .describe("Page Facebook : Reel si vidéo verticale de 3 à 90 s, sinon vidéo classique ; photo ou plusieurs photos (2 à 10)"),
         youtube_title: z.string().max(100).optional().describe("Titre YouTube (sinon 1re ligne de la légende)"),
         youtube_visibility: z
           .enum(YOUTUBE_PRIVACY_STATUSES)
@@ -558,6 +563,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         targetInstagramStory: args.instagram_story,
         targetTiktok: args.tiktok,
         targetYoutube: args.youtube,
+        targetFacebook: args.facebook,
         youtubeTitle: args.youtube_title ?? null,
         instagramCollaborators: args.instagram_collaborators ?? null,
         instagramTrial: args.instagram_trial_reel ? TRIAL_STRATEGY_BY_CHOICE[args.instagram_trial_reel] : null,

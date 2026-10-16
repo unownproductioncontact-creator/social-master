@@ -6,6 +6,9 @@ import {
   needsReauth,
   TikTokPublishFailedError,
   TikTokStillProcessingError,
+  classifyFacebookError,
+  FacebookPublishFailedError,
+  FacebookStillProcessingError,
 } from "@/lib/errors";
 
 describe("classifyInstagramError", () => {
@@ -250,5 +253,45 @@ describe("classifyYouTubeError", () => {
 describe("needsReauth", () => {
   it("retourne false pour un code inconnu", () => {
     expect(needsReauth("not_a_real_code")).toBe(false);
+  });
+});
+
+describe("classifyFacebookError (§40)", () => {
+  const graph = (code: number, subcode?: number) =>
+    new Error(
+      `Facebook 123/video_reels a échoué (400): ${JSON.stringify({
+        error: { message: "x", type: "OAuthException", code, ...(subcode ? { error_subcode: subcode } : {}), fbtrace_id: "A190x458Z" },
+      })}`
+    );
+
+  it("jeton invalide ou droits manquants → reconnexion (compte mis en pause)", () => {
+    expect(classifyFacebookError(graph(190))).toMatchObject({ code: "fb_token_invalid", errorClass: "account_issue" });
+    expect(classifyFacebookError(graph(102, 463)).code).toBe("fb_token_invalid");
+    expect(classifyFacebookError(graph(200)).code).toBe("fb_permission");
+    expect(classifyFacebookError(graph(10)).code).toBe("fb_permission");
+    expect(needsReauth("fb_token_invalid")).toBe(true);
+    expect(needsReauth("fb_permission")).toBe(true);
+  });
+
+  it("blocage, doublon, limite de débit, média refusé, inconnu", () => {
+    expect(classifyFacebookError(graph(368))).toMatchObject({ code: "fb_blocked", errorClass: "account_issue" });
+    expect(needsReauth("fb_blocked")).toBe(false);
+    expect(classifyFacebookError(graph(506))).toMatchObject({ code: "fb_duplicate", errorClass: "content_rejected" });
+    expect(classifyFacebookError(graph(32))).toMatchObject({ code: "fb_rate_limited", errorClass: "transient" });
+    expect(classifyFacebookError(graph(100))).toMatchObject({ code: "fb_media_invalid", errorClass: "content_rejected" });
+    expect(classifyFacebookError(graph(6001)).code).toBe("fb_media_invalid");
+    expect(classifyFacebookError(new TypeError("fetch failed"))).toMatchObject({ code: "fb_unknown", errorClass: "transient" });
+  });
+
+  it("vidéo encore en traitement (sans republication) / abandonnée par Facebook", () => {
+    expect(classifyFacebookError(new FacebookStillProcessingError("v1"))).toMatchObject({ code: "fb_processing", errorClass: "transient" });
+    expect(classifyFacebookError(new FacebookPublishFailedError("ratio"))).toMatchObject({
+      code: "fb_media_invalid",
+      errorClass: "content_rejected",
+    });
+  });
+
+  it("un chiffre dans le fbtrace_id ne fait jamais passer pour un jeton invalide", () => {
+    expect(classifyFacebookError(graph(1)).code).toBe("fb_unknown");
   });
 });

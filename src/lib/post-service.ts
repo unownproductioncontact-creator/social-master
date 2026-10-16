@@ -12,9 +12,11 @@ import {
   INSTAGRAM_TRIAL_STRATEGIES,
 } from "@/lib/instagram-trial";
 import {
+  computeFacebookContentType,
   computeInstagramContentType,
   computeTikTokContentType,
   computeYouTubeContentType,
+  FACEBOOK_PHOTOS_MAX,
 } from "@/lib/content-type";
 import { SHORTS_THUMBNAIL_DISABLED_MESSAGE, thumbnailApiAllowed } from "@/lib/youtube-thumbnail";
 import {
@@ -41,6 +43,9 @@ const SavePostSchema = z.object({
   targetInstagramStory: z.boolean().default(false),
   targetTiktok: z.boolean().default(false),
   targetYoutube: z.boolean().default(false),
+  // Page Facebook (§40) : Reel, vidéo, photo ou plusieurs photos selon les médias.
+  // Facultatif (absent = non) : les appelants d'avant Facebook n'ont pas à le connaître.
+  targetFacebook: z.boolean().optional(),
   // Titre YouTube saisi (contrat partagé { title?: string }). Trimé, ≤ 100 car. ; vide/absent →
   // le worker reconstruit le repli (1re ligne de légende), jamais stocké ici.
   youtubeTitle: z
@@ -75,7 +80,7 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   }
   const data = parsed.data;
 
-  if (!data.targetInstagram && !data.targetTiktok && !data.targetYoutube) {
+  if (!data.targetInstagram && !data.targetTiktok && !data.targetYoutube && !data.targetFacebook) {
     return { error: "Choisissez au moins une plateforme." };
   }
 
@@ -112,6 +117,20 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
     return { error: "YouTube Shorts : sélectionnez une seule vidéo." };
   }
 
+  const facebookContentType = data.targetFacebook
+    ? computeFacebookContentType(
+        orderedMedia.map((m) => ({
+          isVideo: m.mimeType.startsWith("video/"),
+          width: m.width,
+          height: m.height,
+          durationSec: m.durationSec,
+        }))
+      )
+    : null;
+  if (data.targetFacebook && facebookContentType === null) {
+    return { error: `Facebook : une vidéo seule, ou de 1 à ${FACEBOOK_PHOTOS_MAX} photos (pas de mélange vidéo + photos).` };
+  }
+
   const existingPost = data.postId
     ? await db.post.findUnique({ where: { id: data.postId } })
     : null;
@@ -126,6 +145,10 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM");
   const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK");
   const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE");
+  // Page Facebook : la plus récemment connectée si plusieurs (la connexion n'en garde qu'une à la fois).
+  const facebookAccount = accounts
+    .filter((a) => a.platform === "FACEBOOK")
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
   if (data.targetInstagram && !instagramAccount) {
     return { error: "Connectez d'abord votre compte Instagram." };
   }
@@ -134,6 +157,9 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   }
   if (data.targetYoutube && !youtubeAccount) {
     return { error: "Connectez d'abord votre compte YouTube." };
+  }
+  if (data.targetFacebook && !facebookAccount) {
+    return { error: "Connectez d'abord votre Page Facebook." };
   }
 
   // Collaborateurs Instagram (§28) : uniquement Post/Reel/Carrousel — une Story n'en accepte pas.
@@ -293,6 +319,19 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
           // Miniature personnalisée (§37) : posée juste après la mise en ligne de la vidéo.
           coverMediaAssetId: youtubeThumbnailId,
           thumbnailStatus: youtubeThumbnailId ? "PENDING" : null,
+        },
+      });
+    }
+    if (data.targetFacebook && facebookAccount && facebookContentType && !servedPlatforms.has("FACEBOOK")) {
+      await tx.postTarget.create({
+        data: {
+          postId: savedPost.id,
+          socialAccountId: facebookAccount.id,
+          platform: "FACEBOOK",
+          contentType: facebookContentType,
+          // Publication DIRECTE et publique sur la Page, à l'heure prévue (§40).
+          publishMode: "AUTO",
+          status: "PENDING",
         },
       });
     }

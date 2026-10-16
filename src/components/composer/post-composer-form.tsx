@@ -22,6 +22,8 @@ import {
   computeInstagramContentType,
   computeTikTokContentType,
   computeYouTubeContentType,
+  computeFacebookContentType,
+  FACEBOOK_CONTENT_TYPE_LABELS,
   youtubeTitleFallback,
   resolveYouTubeTitle,
   YOUTUBE_TITLE_MAX_LENGTH,
@@ -36,7 +38,7 @@ import { INSTAGRAM_TRIAL_COLLABORATORS_ERROR, type InstagramTrialStrategy } from
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
-type ServedPlatform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE";
+type ServedPlatform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE" | "FACEBOOK";
 
 type MediaOption = {
   id: string;
@@ -89,6 +91,7 @@ export function PostComposerForm({
   instagramConnected,
   tiktokConnected,
   youtubeConnected,
+  facebookConnected = false,
   timezone,
   initialPost,
   initialScheduleLocal,
@@ -98,6 +101,8 @@ export function PostComposerForm({
   instagramConnected: boolean;
   tiktokConnected: boolean;
   youtubeConnected: boolean;
+  /** Page Facebook connectée (§40). */
+  facebookConnected?: boolean;
   /** Fuseau de l'utilisateur (UTC en base, saisie interprétée dans ce fuseau). */
   timezone: string;
   /**
@@ -115,6 +120,7 @@ export function PostComposerForm({
     targetInstagramStory?: boolean;
     targetTiktok?: boolean;
     targetYoutube?: boolean;
+    targetFacebook?: boolean;
     /** Titre YouTube explicite déjà saisi (PostTarget.platformOptions.title) — vide sinon. */
     youtubeTitle?: string;
     instagramCoverTimeMs?: number | null;
@@ -134,6 +140,7 @@ export function PostComposerForm({
   const servedInstagram = servedPlatforms?.includes("INSTAGRAM") ?? false;
   const servedTiktok = servedPlatforms?.includes("TIKTOK") ?? false;
   const servedYoutube = servedPlatforms?.includes("YOUTUBE") ?? false;
+  const servedFacebook = servedPlatforms?.includes("FACEBOOK") ?? false;
 
   const [caption, setCaption] = useState(initialPost?.caption ?? "");
   const [hashtagsText, setHashtagsText] = useState((initialPost?.hashtags ?? []).join(" "));
@@ -146,6 +153,7 @@ export function PostComposerForm({
   const [targetInstagramStory, setTargetInstagramStory] = useState(initialPost?.targetInstagramStory ?? false);
   const [targetTiktok, setTargetTiktok] = useState(initialPost?.targetTiktok ?? tiktokConnected);
   const [targetYoutube, setTargetYoutube] = useState(initialPost?.targetYoutube ?? youtubeConnected);
+  const [targetFacebook, setTargetFacebook] = useState(initialPost?.targetFacebook ?? facebookConnected);
   const [youtubeTitle, setYoutubeTitle] = useState(initialPost?.youtubeTitle ?? "");
   const [coverTimeMs, setCoverTimeMs] = useState<number | null>(initialPost?.instagramCoverTimeMs ?? null);
   const [collaboratorsText, setCollaboratorsText] = useState(
@@ -172,6 +180,13 @@ export function PostComposerForm({
       : null;
   const tiktokContentType = mediaMeta.length > 0 ? computeTikTokContentType(mediaMeta) : null;
   const youtubeContentType = mediaMeta.length > 0 ? computeYouTubeContentType(mediaMeta) : null;
+  // Page Facebook (§40) : Reel si vidéo verticale de 3 à 90 s, sinon vidéo ; photo ou plusieurs photos.
+  const facebookContentType =
+    selectedMedia.length > 0
+      ? computeFacebookContentType(
+          selectedMedia.map((m) => ({ isVideo: m.isVideo, width: m.width, height: m.height, durationSec: m.durationSec }))
+        )
+      : null;
 
   // Valeurs effectives des cases (P1-2) : une plateforme servie est forcée cochée ; TikTok ne peut pas
   // rester coché sur une combinaison de médias qu'il refuse (sinon la sauvegarde échouerait).
@@ -187,6 +202,9 @@ export function PostComposerForm({
   const youtubeChecked = servedYoutube || (targetYoutube && youtubeEligible);
   const youtubeDisabled = !youtubeConnected || servedYoutube || youtubeContentType === null;
   const youtubeTitleVisible = youtubeChecked && !youtubeDisabled;
+  const facebookEligible = facebookConnected && facebookContentType !== null;
+  const facebookChecked = servedFacebook || (targetFacebook && facebookEligible);
+  const facebookDisabled = !facebookConnected || servedFacebook || facebookContentType === null;
   // Collaborateurs Instagram (§28) : Post/Reel/Carrousel seulement (pas de Story), tant que pas publié.
   const igCollaboratorsVisible =
     targetInstagram && instagramConnected && !servedInstagram && igContentType !== null && igContentType !== "STORY";
@@ -280,6 +298,7 @@ export function PostComposerForm({
         targetInstagramStory,
         targetTiktok: tiktokChecked,
         targetYoutube: youtubeChecked,
+        targetFacebook: facebookChecked,
         // Titre envoyé UNIQUEMENT s'il est saisi (trim) et pertinent (case cochée/actionnable) : sinon le
         // worker reconstruit le repli (1re ligne de légende via youtubeTitleFallback), jamais stocké vide.
         youtubeTitle: youtubeTitleVisible && youtubeTitle.trim() ? youtubeTitle.trim() : undefined,
@@ -551,6 +570,33 @@ export function PostComposerForm({
               </p>
             )}
           </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="target-facebook"
+                checked={facebookChecked}
+                disabled={facebookDisabled}
+                onCheckedChange={(checked) => setTargetFacebook(checked === true)}
+              />
+              <Label htmlFor="target-facebook" className="text-[13.5px] font-normal">
+                Facebook (Page){" "}
+                {!facebookConnected && <span className="text-muted-foreground">(non connectée)</span>}
+                {facebookConnected && !servedFacebook && facebookContentType && (
+                  <Badge variant="outline" className="ml-2 text-xs">
+                    {FACEBOOK_CONTENT_TYPE_LABELS[facebookContentType]}
+                  </Badge>
+                )}
+                {facebookConnected && !servedFacebook && facebookContentType === null && selectedMedia.length > 0 && (
+                  <span className="text-muted-foreground">— une vidéo seule, ou de 1 à 10 photos</span>
+                )}
+              </Label>
+            </div>
+            {servedFacebook && (
+              <p className="ml-6 text-[11.5px] text-muted-foreground">
+                Déjà publié sur Facebook — ne sera pas republié.
+              </p>
+            )}
+          </div>
         </div>
 
         {targetInstagram && !servedInstagram && igContentType === "REEL" && selectedMedia[0]?.isVideo && (
@@ -702,7 +748,7 @@ export function PostComposerForm({
             <PublishNowButton
               onConfirm={() => submit("now")}
               disabled={isPending || mediaAssetIds.length === 0}
-              platforms={{ instagram: igChecked, tiktok: tiktokChecked, youtube: youtubeChecked }}
+              platforms={{ instagram: igChecked, tiktok: tiktokChecked, youtube: youtubeChecked, facebook: facebookChecked }}
               className="w-full sm:w-auto"
             />
             <Button

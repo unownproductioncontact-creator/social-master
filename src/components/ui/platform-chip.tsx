@@ -5,9 +5,10 @@ const PLATFORM_LABELS: Record<string, string> = {
   TIKTOK: "TikTok",
   INSTAGRAM: "Instagram",
   YOUTUBE: "YouTube",
+  FACEBOOK: "Facebook",
 };
 
-/** Nom lisible d'une plateforme (TikTok/Instagram/YouTube) ; valeur inconnue renvoyée telle quelle. */
+/** Nom lisible d'une plateforme (TikTok/Instagram/YouTube/Facebook) ; valeur inconnue renvoyée telle quelle. */
 export function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform;
 }

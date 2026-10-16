@@ -225,6 +225,7 @@ export function SchedulePanel({
                   instagram: targets.some((t) => t.platform === "INSTAGRAM"),
                   tiktok: targets.some((t) => t.platform === "TIKTOK"),
                   youtube: targets.some((t) => t.platform === "YOUTUBE"),
+                  facebook: targets.some((t) => t.platform === "FACEBOOK"),
                 }}
                 className="w-full sm:w-auto"
               />

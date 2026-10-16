@@ -134,6 +134,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           instagramConnected={accounts.some((a) => a.platform === "INSTAGRAM")}
           tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
           youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
+          facebookConnected={accounts.some((a) => a.platform === "FACEBOOK")}
           timezone={user?.timezone ?? "Europe/Paris"}
           servedPlatforms={servedPlatforms}
           initialPost={{
@@ -148,6 +149,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             targetInstagramStory: post.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
             targetTiktok: post.postTargets.some((t) => t.platform === "TIKTOK"),
             targetYoutube: post.postTargets.some((t) => t.platform === "YOUTUBE"),
+            targetFacebook: post.postTargets.some((t) => t.platform === "FACEBOOK"),
             youtubeTitle:
               (post.postTargets.find((t) => t.platform === "YOUTUBE")?.platformOptions as { title?: string } | null)
                 ?.title ?? undefined,

@@ -4,6 +4,7 @@
 export type InstagramContentType = "REEL" | "IMAGE" | "STORY" | "CAROUSEL";
 export type TikTokContentType = "TIKTOK_VIDEO" | "TIKTOK_PHOTO";
 export type YouTubeContentType = "YOUTUBE_SHORT";
+export type FacebookContentType = "FACEBOOK_REEL" | "FACEBOOK_VIDEO" | "FACEBOOK_PHOTO" | "FACEBOOK_PHOTOS";
 
 /** IG : story si demandé et 1 seul média ; carrousel si 2+ ; sinon Reel/Image selon le type du média. */
 export function computeInstagramContentType(
@@ -31,6 +32,42 @@ export function computeTikTokContentType(media: { isVideo: boolean }[]): TikTokC
  */
 export function computeYouTubeContentType(media: { isVideo: boolean }[]): YouTubeContentType | null {
   if (media.length === 1 && media[0].isVideo) return "YOUTUBE_SHORT";
+  return null;
+}
+
+// Reels Facebook (doc « Reels Publishing API » vérifiée le 17/10/2026) : 9:16, 3 à 90 s.
+export const FACEBOOK_REEL_MIN_SECONDS = 3;
+export const FACEBOOK_REEL_MAX_SECONDS = 90;
+/** Plafond retenu pour une publication à plusieurs photos (comme un carrousel Instagram). */
+export const FACEBOOK_PHOTOS_MAX = 10;
+
+export const FACEBOOK_CONTENT_TYPE_LABELS: Record<FacebookContentType, string> = {
+  FACEBOOK_REEL: "Reel",
+  FACEBOOK_VIDEO: "Vidéo",
+  FACEBOOK_PHOTO: "Photo",
+  FACEBOOK_PHOTOS: "Plusieurs photos",
+};
+
+/**
+ * Page Facebook (CLAUDE.md §40) : une vidéo verticale de 3 à 90 s part en Reel ; toute autre vidéo
+ * (horizontale, plus longue, dimensions inconnues) en vidéo classique, que Facebook accepte sans ces
+ * contraintes ; une image → photo ; 2 à 10 images → publication à plusieurs photos. Vidéo mêlée à
+ * des images, ou plus de 10 images → null (non pris en charge).
+ */
+export function computeFacebookContentType(
+  media: { isVideo: boolean; width?: number | null; height?: number | null; durationSec?: number | null }[]
+): FacebookContentType | null {
+  const videos = media.filter((m) => m.isVideo);
+  const photoCount = media.length - videos.length;
+  if (videos.length === 1 && photoCount === 0) {
+    const { width, height, durationSec } = videos[0];
+    const vertical = width != null && height != null && height > width;
+    const reelLength =
+      durationSec != null && durationSec >= FACEBOOK_REEL_MIN_SECONDS && durationSec <= FACEBOOK_REEL_MAX_SECONDS;
+    return vertical && reelLength ? "FACEBOOK_REEL" : "FACEBOOK_VIDEO";
+  }
+  if (videos.length === 0 && photoCount === 1) return "FACEBOOK_PHOTO";
+  if (videos.length === 0 && photoCount >= 2 && photoCount <= FACEBOOK_PHOTOS_MAX) return "FACEBOOK_PHOTOS";
   return null;
 }
 

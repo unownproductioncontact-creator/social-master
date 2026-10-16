@@ -22,6 +22,9 @@ export async function runTokenRefresh(): Promise<void> {
         // refresh token → rien à anticiper ici. Surtout NE PAS router un compte YouTube vers
         // maybeRefreshTikTok (il enverrait le refresh token Google à l'endpoint TikTok → échec →
         // NEEDS_REAUTH à tort). Branche laissée vide à dessein pour ne pas casser la boucle existante.
+      } else if (account.platform === "FACEBOOK") {
+        // NO-OP (§40) : un jeton de Page obtenu depuis un jeton utilisateur long n'expire pas. Même piège
+        // que YouTube : ne jamais l'envoyer au rafraîchissement TikTok de la branche par défaut.
       } else {
         await maybeRefreshTikTok(account);
       }

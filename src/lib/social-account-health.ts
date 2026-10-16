@@ -4,6 +4,7 @@ import { decryptToken, encryptToken } from "@/lib/crypto";
 import { fetchInstagramProfile } from "@/lib/providers/instagram";
 import { fetchTikTokUserInfo } from "@/lib/providers/tiktok";
 import { fetchYouTubeChannel, refreshYouTubeAccessToken } from "@/lib/providers/youtube";
+import { fetchFacebookPage } from "@/lib/providers/facebook";
 
 /**
  * Vérifie qu'un compte social est toujours joignable avec le token stocké.
@@ -35,6 +36,9 @@ export async function checkSocialAccountHealth(accountId: string): Promise<void>
         },
       });
       await fetchYouTubeChannel(refreshed.access_token);
+    } else if (account.platform === "FACEBOOK") {
+      // Page Facebook (§40) : lecture de la Page avec son jeton (sans expiration).
+      await fetchFacebookPage(account.platformAccountId, accessToken);
     } else {
       await fetchTikTokUserInfo(accessToken);
     }

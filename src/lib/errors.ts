@@ -9,6 +9,8 @@ const REAUTH_CODES = new Set([
   "tt_banned",
   "yt_token_invalid",
   "yt_no_channel",
+  "fb_token_invalid",
+  "fb_permission",
 ]);
 
 export function needsReauth(code: string): boolean {
@@ -341,4 +343,85 @@ export function classifyYouTubeError(err: unknown): ClassifiedError {
   }
 
   return { errorClass: "transient", code: "yt_unknown", message: "Erreur YouTube inattendue, nouvelle tentative en cours." };
+}
+
+// ---------------------------------------------------------------------------
+// Facebook (Page) — CLAUDE.md §40. Même format d'erreur que l'API Graph d'Instagram :
+// { "error": { "message", "type": "OAuthException", "code", "error_subcode", "fbtrace_id" } }, injecté
+// dans le message par le provider. On lit code/subcode via extractMetaError (jamais le blob entier).
+// ---------------------------------------------------------------------------
+
+/**
+ * La vidéo est chez Facebook et publiée (ou en cours de publication) mais pas encore confirmée dans le
+ * délai d'attente : ce n'est PAS un échec, et un nouvel essai ne la republie jamais (il reprend
+ * seulement la vérification de la même vidéo).
+ */
+export class FacebookStillProcessingError extends Error {
+  readonly videoId: string;
+  constructor(videoId: string) {
+    super(`fb_processing: Facebook traite encore la vidéo ${videoId}.`);
+    this.name = "FacebookStillProcessingError";
+    this.videoId = videoId;
+  }
+}
+
+/** Facebook a abandonné la vidéo (statut « error ») : rien ne sera publié. */
+export class FacebookPublishFailedError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(`fb_video_error: ${reason}`);
+    this.name = "FacebookPublishFailedError";
+    this.reason = reason;
+  }
+}
+
+const FB_REAUTH_SUBCODES = new Set([458, 459, 460, 463, 464, 467]);
+const FB_RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80001]);
+
+export function classifyFacebookError(err: unknown): ClassifiedError {
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (err instanceof FacebookStillProcessingError || message.startsWith("fb_processing")) {
+    return {
+      errorClass: "transient",
+      code: "fb_processing",
+      message: "Facebook traite encore la vidéo — nouvelle vérification en cours, sans republication.",
+    };
+  }
+  if (err instanceof FacebookPublishFailedError || message.startsWith("fb_video_error")) {
+    return {
+      errorClass: "content_rejected",
+      code: "fb_media_invalid",
+      message: "Facebook a refusé la vidéo (format, durée ou ratio non acceptés).",
+    };
+  }
+
+  const { code, subcode } = extractMetaError(message);
+  if (code === 190 || (subcode !== null && FB_REAUTH_SUBCODES.has(subcode))) {
+    return { errorClass: "account_issue", code: "fb_token_invalid", message: "Connexion Facebook expirée — reconnectez votre Page." };
+  }
+  if (code === 10 || (code !== null && code >= 200 && code <= 299)) {
+    return {
+      errorClass: "account_issue",
+      code: "fb_permission",
+      message: "La connexion Facebook n'a pas le droit de publier sur la Page — reconnectez Facebook en acceptant toutes les autorisations.",
+    };
+  }
+  if (code === 368) {
+    return {
+      errorClass: "account_issue",
+      code: "fb_blocked",
+      message: "Facebook a temporairement bloqué la publication sur cette Page (règles de la communauté).",
+    };
+  }
+  if (code === 506) {
+    return { errorClass: "content_rejected", code: "fb_duplicate", message: "Facebook a refusé une publication identique à une précédente." };
+  }
+  if (code !== null && FB_RATE_LIMIT_CODES.has(code)) {
+    return { errorClass: "transient", code: "fb_rate_limited", message: "Limite de requêtes Facebook atteinte, nouvelle tentative en cours." };
+  }
+  if (code === 100 || (code !== null && code >= 6000 && code <= 6999)) {
+    return { errorClass: "content_rejected", code: "fb_media_invalid", message: "Facebook a refusé ce média ou cette légende (format, durée ou paramètre invalide)." };
+  }
+  return { errorClass: "transient", code: "fb_unknown", message: "Erreur Facebook inattendue, nouvelle tentative en cours." };
 }

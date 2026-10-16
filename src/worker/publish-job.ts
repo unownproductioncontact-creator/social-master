@@ -5,7 +5,20 @@ import { decryptToken, encryptToken } from "@/lib/crypto";
 import { getPublicMediaUrl, mediaWorkerEnabled, mediaWorkerPushConfig } from "@/lib/storage";
 import { mediaUrlDelivery, tiktokVideoDelivery, youtubeDelivery, type DeliveryPath } from "@/lib/delivery-path";
 import { ensureJpegVersion } from "@/lib/image-convert";
-import { classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
+import { classifyFacebookError, classifyInstagramError, classifyTikTokError, classifyYouTubeError, needsReauth } from "@/lib/errors";
+import type { Prisma } from "@/generated/prisma/client";
+import {
+  facebookReelPublishRequested,
+  fetchFacebookPermalink,
+  finishFacebookReel,
+  publishFacebookPhoto,
+  publishFacebookPhotos,
+  publishFacebookVideoFromUrl,
+  startFacebookReel,
+  uploadFacebookReelFromUrl,
+  waitForFacebookVideo,
+} from "@/lib/providers/facebook";
+import { deliverFacebookVideo, readFacebookProgress, withFacebookProgress } from "@/lib/facebook-publish";
 import { recomputePostStatus } from "@/lib/post-status";
 import { purgeMediaForPublishedPost } from "@/lib/media-delete";
 import { publishInstagramMedia, publishInstagramCarousel, getContentPublishingLimit } from "@/lib/providers/instagram";
@@ -307,6 +320,60 @@ async function processTarget(postTargetId: string): Promise<void> {
     if (target.coverMediaAssetId || target.thumbnailStatus === "PENDING") {
       thumbnail = (await scheduleThumbnailAfterUpload(postTargetId)).status;
     }
+  } else if (target.platform === "FACEBOOK") {
+    // Page Facebook (§40) : jeton de Page (sans expiration), fichiers téléchargés par Facebook à leur URL
+    // publique (Worker Cloudflare). Vidéos : avancement noté à chaque étape, jamais de republication.
+    const pageId = target.socialAccount.platformAccountId;
+    delivery = mediaUrlDelivery(mediaWorkerEnabled());
+    let objectId: string;
+    if (target.contentType === "FACEBOOK_REEL" || target.contentType === "FACEBOOK_VIDEO") {
+      const isReel = target.contentType === "FACEBOOK_REEL";
+      const fileUrl = getPublicMediaUrl(orderedMedia[0].storageKey);
+      objectId = await deliverFacebookVideo({
+        existing: readFacebookProgress(target.platformOptions),
+        start: () => (isReel ? startFacebookReel(pageId, accessToken) : publishFacebookVideoFromUrl(pageId, accessToken, fileUrl, caption)),
+        ...(isReel
+          ? {
+              upload: (videoId: string) => uploadFacebookReelFromUrl(videoId, accessToken, fileUrl),
+              finish: (videoId: string) => finishFacebookReel(pageId, accessToken, videoId, caption),
+              alreadyPublishing: (videoId: string) => facebookReelPublishRequested(videoId, accessToken),
+            }
+          : {}),
+        save: async (progress) => {
+          await db.postTarget.update({
+            where: { id: postTargetId },
+            data: { platformOptions: withFacebookProgress(target.platformOptions, progress) as Prisma.InputJsonObject },
+          });
+        },
+        waitUntilPublished: (videoId) => waitForFacebookVideo(videoId, accessToken, isReel ? "reel" : "video"),
+      });
+    } else {
+      const imageUrls = await Promise.all(
+        orderedMedia.map(async (m) => getPublicMediaUrl(await ensureJpegVersion(m.storageKey, m.mimeType)))
+      );
+      if (target.contentType === "FACEBOOK_PHOTO") {
+        const photo = await publishFacebookPhoto(pageId, accessToken, imageUrls[0], caption);
+        objectId = photo.postId ?? photo.photoId;
+      } else {
+        objectId = await publishFacebookPhotos(pageId, accessToken, imageUrls, caption);
+      }
+    }
+    // Lien public : demandé à Facebook ; à défaut, adresse construite (la publication est faite, un lien
+    // illisible ne doit jamais la faire passer pour un échec).
+    const permalink = await fetchFacebookPermalink(objectId, accessToken).catch(() => null);
+    await db.postTarget.update({
+      where: { id: postTargetId },
+      data: {
+        status: "PUBLISHED",
+        platformPostId: objectId,
+        platformPostUrl:
+          permalink ??
+          (target.contentType === "FACEBOOK_REEL" ? `https://www.facebook.com/reel/${objectId}` : `https://www.facebook.com/${objectId}`),
+        publishedAt: new Date(),
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
   } else {
     // TikTok (vidéo ou photo) : seul le mode brouillon (inbox) est supporté tant que l'app n'est pas
     // auditée. Un retry ne renvoie JAMAIS un média que TikTok détient déjà (publish_id persisté) : il
@@ -424,7 +491,9 @@ export async function handlePublishBatch(
         ? classifyTikTokError(err)
         : target?.platform === "YOUTUBE"
           ? classifyYouTubeError(err)
-          : classifyInstagramError(err);
+          : target?.platform === "FACEBOOK"
+            ? classifyFacebookError(err)
+            : classifyInstagramError(err);
 
     // Brouillon TikTok transmis mais pas encore confirmé à la dernière tentative : ce n'est PAS un échec
     // (TikTok peut encore le livrer) — la cible reste en cours et la réconciliation reprend la

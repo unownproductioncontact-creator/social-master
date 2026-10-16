@@ -9,7 +9,7 @@ import { CheckCircle2, AlertTriangle } from "lucide-react";
 export default async function ConnectionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ instagram?: string; tiktok?: string; youtube?: string; detail?: string }>;
+  searchParams: Promise<{ instagram?: string; tiktok?: string; youtube?: string; facebook?: string; detail?: string }>;
 }) {
   const session = await verifySession();
   const params = await searchParams;
@@ -22,13 +22,16 @@ export default async function ConnectionsPage({
   const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM") ?? null;
   const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK") ?? null;
   const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE") ?? null;
+  // Page Facebook (§40) : la plus récemment connectée (la connexion n'en garde qu'une à la fois).
+  const facebookAccount =
+    accounts.filter((a) => a.platform === "FACEBOOK").sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0] ?? null;
 
-  const feedback = params.instagram ?? params.tiktok ?? params.youtube;
+  const feedback = params.instagram ?? params.tiktok ?? params.youtube ?? params.facebook;
   const feedbackIsError = feedback === "error";
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Connexions" description="Connectez vos comptes Instagram, TikTok et YouTube." />
+      <PageHeader title="Connexions" description="Connectez vos comptes Instagram, TikTok, YouTube et votre Page Facebook." />
 
       {feedback && (
         <Alert variant={feedbackIsError ? "destructive" : "default"}>
@@ -40,7 +43,7 @@ export default async function ConnectionsPage({
         </Alert>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <SocialAccountCard
           platformLabel="Instagram"
           connectUrl="/api/oauth/instagram/start"
@@ -60,6 +63,11 @@ export default async function ConnectionsPage({
               ? "Nouveau : modifier vos vidéos déjà en ligne (titre, description, visibilité, horaire). Cliquez sur « Reconnecter » et acceptez la modification des vidéos, une seule fois."
               : undefined
           }
+        />
+        <SocialAccountCard
+          platformLabel="Facebook"
+          connectUrl="/api/oauth/facebook/start"
+          account={facebookAccount}
         />
       </div>
     </div>

@@ -11,6 +11,8 @@ enum Platform {
   INSTAGRAM
   TIKTOK
   YOUTUBE
+  // Page Facebook (CLAUDE.md §40) : publication directe via l'API Graph, jeton de Page.
+  FACEBOOK
 }
 
 enum SocialAccountType {
@@ -47,6 +49,11 @@ enum PostContentType {
   TIKTOK_VIDEO
   TIKTOK_PHOTO
   YOUTUBE_SHORT
+  // Page Facebook (§40) : Reel (vidéo verticale de 3 à 90 s), autre vidéo, une photo, plusieurs photos.
+  FACEBOOK_REEL
+  FACEBOOK_VIDEO
+  FACEBOOK_PHOTO
+  FACEBOOK_PHOTOS
 }
 
 enum PublishMode {
