@@ -1,7 +1,7 @@
 import "server-only";
 import * as z from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { db } from "@/lib/db";
 import {
   publishPostNowForUser,
@@ -26,6 +26,13 @@ import { YOUTUBE_PRIVACY_STATUSES, youtubePrivacyFromOptions } from "@/lib/youtu
 import { PROCESSING_NOTE, requestYouTubeThumbnailForUser } from "@/lib/youtube-thumbnail-service";
 import { coverTimeFromOptions, readCoverResult, type CoverResult } from "@/lib/instagram-cover";
 import { shortsThumbnailApiEnabled, summarizeApiError } from "@/lib/youtube-thumbnail";
+import {
+  getYouTubeVideoForUser,
+  listYouTubeVideosForUser,
+  updateYouTubeVideoForUser,
+  type EditScope,
+} from "@/lib/youtube-video-edit-service";
+import { RECONNECT_FOR_EDIT_MESSAGE, tagsLength, utf8Bytes, type VideoChange, type YouTubeVideoDetails } from "@/lib/youtube-video-edit";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 
 /**
@@ -43,7 +50,8 @@ function instructions(app: string): string {
 - Instagram et YouTube : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Miniature d'un Short YouTube : ${shortsThumbnailApiEnabled() ? "une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master dès que YouTube a traité la vidéo ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée ; état dans get_post (youtube_thumbnail), jamais bloquant pour la vidéo." : "DÉSACTIVÉE — YouTube n'affiche pas (ni sur la chaîne, ni dans la recherche) une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026) ; elle s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer). Ne pas proposer youtube_thumbnail_media_id ni set_youtube_thumbnail pour un Short."} Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
-- Avant toute action qui publie ou programme, résume à l'utilisateur ce qui va partir (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel) et attends sa confirmation.`;
+- Vidéos déjà sur YouTube (publiées par Social Master ou non, chaîne connectée uniquement) : list_youtube_videos pour les retrouver, get_youtube_video pour lire titre/description/tags actuels, update_youtube_video pour changer titre, description, tags, visibilité ou date de publication d'une vidéo programmée. Le fichier vidéo lui-même ne peut pas être remplacé (YouTube ne le permet pas).
+- Avant toute action qui publie, programme ou modifie une vidéo en ligne, résume à l'utilisateur ce qui va changer (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel ; pour une modification : avant → après) et attends sa confirmation.`;
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
@@ -599,6 +607,120 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     }
   );
 
+  // ------------------------------------------------- vidéos déjà sur YouTube (§39)
+
+  const isoLocal = (iso: string | undefined) => (iso ? fmt(new Date(iso)) ?? iso : undefined);
+  const editNote = (scope: EditScope | undefined) =>
+    scope === "missing" ? `${RECONNECT_FOR_EDIT_MESSAGE} Lien : ${app}/connections` : undefined;
+  const videoSummary = (v: YouTubeVideoDetails & { postId?: string }) => ({
+    video_id: v.id,
+    url: `https://youtu.be/${v.id}`,
+    title: v.title,
+    visibility: v.privacyStatus,
+    scheduled_for: isoLocal(v.publishAt),
+    published_at: v.privacyStatus !== "private" ? isoLocal(v.publishedAt) : undefined,
+    duration_s: v.durationSec,
+    post_id: v.postId,
+  });
+  const shorten = (text: string) => (text.length > 500 ? `${text.slice(0, 500)}…` : text);
+  const changeView = (c: VideoChange) => ({
+    field: c.field,
+    before: c.field === "publish_at" ? (isoLocal(c.before) ?? "aucune") : shorten(c.before),
+    after: c.field === "publish_at" ? isoLocal(c.after) : shorten(c.after),
+  });
+  const VIDEO_REF = {
+    video: z.string().min(1).optional().describe("Lien de la vidéo (youtube.com/shorts/…, watch?v=…, youtu.be/…, Studio) ou son identifiant"),
+    post_id: z.string().min(1).optional().describe("Ou : le post Social Master qui a publié la vidéo"),
+  };
+
+  server.registerTool(
+    "list_youtube_videos",
+    {
+      title: "Lister les vidéos de la chaîne YouTube",
+      description:
+        "Dernières vidéos de la chaîne YouTube connectée, de la plus récente à la plus ancienne (publiques, non répertoriées, privées et programmées ; publiées par Social Master ou non) : identifiant, titre, visibilité, date, durée, post Social Master éventuel. Pour retrouver la vidéo à modifier avec update_youtube_video. 3 unités de quota YouTube.",
+      inputSchema: { limit: z.number().int().min(1).max(50).default(15) },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ limit }) => {
+      const result = await listYouTubeVideosForUser(userId, limit);
+      if (result.error || !result.videos) return fail(result.error ?? "Lecture impossible.");
+      return ok({
+        channel: result.channel,
+        can_edit: result.editScope !== "missing",
+        note: editNote(result.editScope),
+        videos: result.videos.map(videoSummary),
+      });
+    }
+  );
+
+  server.registerTool(
+    "get_youtube_video",
+    {
+      title: "Détail d'une vidéo YouTube",
+      description:
+        "Une vidéo de la chaîne connectée telle que YouTube l'affiche maintenant : titre, description COMPLÈTE, tags, visibilité, date de publication programmée, durée, post Social Master éventuel. À lire avant update_youtube_video, qui remplace la description et les tags en entier. Indiquer video (lien ou identifiant) ou post_id. 1 unité de quota.",
+      inputSchema: VIDEO_REF,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ video, post_id }) => {
+      const result = await getYouTubeVideoForUser(userId, { video, postId: post_id });
+      if (result.error || !result.video) return fail(result.error ?? "Lecture impossible.");
+      const v = result.video;
+      return ok({
+        ...videoSummary({ ...v, postId: result.postId }),
+        channel: result.channel,
+        social_master_status: result.targetStatus,
+        description: v.description,
+        description_bytes: utf8Bytes(v.description),
+        tags: v.tags,
+        tags_length: tagsLength(v.tags),
+        category_id: v.categoryId,
+        made_for_kids: v.madeForKids,
+        upload_status: v.uploadStatus,
+        can_edit: result.editScope !== "missing",
+        note: editNote(result.editScope),
+      });
+    }
+  );
+
+  server.registerTool(
+    "update_youtube_video",
+    {
+      title: "Modifier une vidéo YouTube",
+      description:
+        "Modifie une vidéo DÉJÀ sur YouTube (publiée, non répertoriée, privée ou programmée), publiée par Social Master ou non — vidéo de la chaîne connectée uniquement. Seuls les champs indiqués changent, tout le reste est conservé. title ≤ 100 caractères ; description ≤ 5000 octets et tags ≤ 500 caractères au total REMPLACENT entièrement les actuels (lire get_youtube_video d'abord ; garder les hashtags voulus dans la description) ; tags = [] les retire. visibility « public » sur une vidéo programmée = publication IMMÉDIATE. publish_at = nouvelle date d'une vidéo privée jamais publiée (programmée) ; pour décaler aussi Instagram/TikTok d'un post, utiliser plutôt reschedule_post. Le fichier vidéo ne peut pas être remplacé (YouTube ne le permet pas). Change ce que voient les spectateurs : montrer à l'utilisateur chaque changement (avant → après) et obtenir sa confirmation avant d'appeler. 50 unités de quota YouTube (10 000 par jour).",
+      inputSchema: {
+        ...VIDEO_REF,
+        title: z.string().optional().describe("Nouveau titre (≤ 100 caractères, ni < ni >)"),
+        description: z.string().optional().describe("Nouvelle description COMPLÈTE (≤ 5000 octets, ni < ni >)"),
+        tags: z.array(z.string()).optional().describe("Nouveaux tags (mots-clés, sans #) — remplacent les actuels ; [] = aucun"),
+        visibility: z
+          .enum(YOUTUBE_PRIVACY_STATUSES)
+          .optional()
+          .describe("public, unlisted (non répertoriée : visible seulement avec le lien) ou private"),
+        publish_at: DATETIME_LOCAL.optional().describe(
+          "Nouvelle date de publication d'une vidéo programmée (privée, jamais publiée), heure LOCALE AAAA-MM-JJTHH:mm"
+        ),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ video, post_id, title, description, tags, visibility, publish_at }) => {
+      const publishAt = publish_at ? fromZonedTime(publish_at, tz) : undefined;
+      if (publishAt && Number.isNaN(publishAt.getTime())) return fail("Date de publication invalide.");
+      const result = await updateYouTubeVideoForUser(userId, { video, postId: post_id }, { title, description, tags, privacy: visibility, publishAt });
+      if (result.error || !result.video) {
+        return fail(`${result.error ?? "Modification impossible."}${result.code === "yt_edit_scope" ? ` Lien : ${app}/connections` : ""}`);
+      }
+      return ok({
+        ...videoSummary({ ...result.video, postId: result.postId }),
+        channel: result.channel,
+        changed: (result.changes ?? []).map(changeView),
+        notes: result.notes,
+      });
+    }
+  );
+
   server.registerTool(
     "schedule_post",
     {
@@ -619,7 +741,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Changer l'horaire",
       description:
-        "Déplace un post DÉJÀ programmé à une nouvelle heure locale (les décalages entre plateformes sont conservés). Une vidéo déjà programmée chez YouTube y est supprimée (elle n'a jamais été publique) puis renvoyée pour le nouvel horaire.",
+        "Déplace un post DÉJÀ programmé à une nouvelle heure locale (les décalages entre plateformes sont conservés). Une vidéo déjà programmée chez YouTube y est déplacée sur place (même vidéo, miniature posée dans Studio conservée) ; si la connexion YouTube n'a pas encore le droit de modification (Connexions → YouTube → « Reconnecter »), elle y est supprimée (elle n'a jamais été publique) puis renvoyée pour le nouvel horaire.",
       inputSchema: { post_id: z.string().min(1), datetime: DATETIME_LOCAL },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

@@ -16,6 +16,9 @@ vi.mock("@/lib/providers/youtube", () => ({
   setYouTubeThumbnail: vi.fn(),
   refreshYouTubeAccessToken: vi.fn(),
   fetchYouTubeVideoSummary: vi.fn(),
+  fetchYouTubeVideoDetails: vi.fn(),
+  listYouTubeChannelVideos: vi.fn(),
+  updateYouTubeVideo: vi.fn(),
 }));
 vi.mock("@/lib/youtube-token", () => ({ freshYouTubeAccessToken: vi.fn(async () => "yt-token") }));
 vi.mock("@/lib/telegram", () => ({ notifyTelegram: vi.fn(async () => {}) }));

@@ -6,6 +6,7 @@ import { checkTikTokDraftCapacityAt } from "@/lib/quota";
 import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
 import { schedulesOnYouTube } from "@/lib/youtube-scheduling";
 import { cancelScheduledYouTubeVideos } from "@/lib/youtube-scheduled-video";
+import { moveScheduledYouTubeVideo } from "@/lib/youtube-video-edit-service";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 
 type SchedulePostResult = { error?: string };
@@ -191,16 +192,20 @@ export async function schedulePost(
  * cible réussie ET la ferait republier à la reprogrammation (le pire bug possible, règle n°1). Seules
  * les cibles PENDING/PROCESSING/FAILED sont réinitialisées.
  */
-export async function unschedulePost(postId: string): Promise<void> {
+export async function unschedulePost(postId: string, options?: { keepTargetIds?: readonly string[] }): Promise<void> {
   const boss = getBoss();
+  // Cibles à laisser telles quelles : vidéo programmée chez YouTube que la reprogrammation vient de
+  // déplacer sur place (§39) — elle garde son statut, sa vidéo, son job et sa miniature.
+  const keep = [...(options?.keepTargetIds ?? [])];
+  const notKept = keep.length > 0 ? { id: { notIn: keep } } : {};
 
   // Vidéo déjà programmée CHEZ YOUTUBE (§38) : annulée là-bas d'abord (supprimée — elle n'a jamais été
   // publique). Si c'est impossible, l'erreur remonte AVANT toute écriture : la programmation reste
   // intacte plutôt qu'un post « en brouillon » dont la vidéo partirait quand même à l'heure prévue.
-  await cancelScheduledYouTubeVideos(postId);
+  await cancelScheduledYouTubeVideos(postId, keep);
 
   const jobs = await db.publishJob.findMany({
-    where: { postTarget: { postId } },
+    where: { postTarget: { postId, ...notKept } },
     include: { postTarget: true },
   });
 
@@ -213,12 +218,12 @@ export async function unschedulePost(postId: string): Promise<void> {
   }
 
   await db.$transaction(async (tx) => {
-    await tx.publishJob.deleteMany({ where: { postTarget: { postId } } });
+    await tx.publishJob.deleteMany({ where: { postTarget: { postId, ...notKept } } });
     // On ne réinitialise QUE les cibles pas-encore-résolues (≠ PUBLISHED/SENT_TO_INBOX). On remet aussi
     // leur PostTarget.scheduledAt à null : l'horaire effectif n'a de sens que tant que le post est
     // programmé (symétrique de l'écriture dans schedulePost). Les cibles publiées gardent tout.
     await tx.postTarget.updateMany({
-      where: { postId, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
+      where: { postId, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] }, ...notKept },
       data: {
         status: "PENDING",
         scheduledAt: null,
@@ -238,6 +243,7 @@ export async function unschedulePost(postId: string): Promise<void> {
         platform: "YOUTUBE",
         status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] },
         coverMediaAssetId: { not: null },
+        ...notKept,
       },
       data: { thumbnailStatus: "PENDING", thumbnailError: null, thumbnailSetAt: null },
     });
@@ -267,7 +273,7 @@ export async function reschedulePost(
 
   const post = await db.post.findUnique({
     where: { id: postId },
-    include: { postTargets: true },
+    include: { postTargets: { include: { socialAccount: true } } },
   });
   if (!post) return { error: "Post introuvable." };
   if (post.status !== "SCHEDULED") {
@@ -296,10 +302,45 @@ export async function reschedulePost(
     return { error: "La date de programmation doit être au moins 1 minute dans le futur." };
   }
 
-  try {
-    await unschedulePost(postId);
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : "Reprogrammation impossible." };
+  // §39 : une vidéo déjà programmée chez YouTube est déplacée SUR PLACE (même vidéo, miniature posée dans
+  // Studio conservée) quand la connexion a le droit de modification ; sinon, ou si YouTube refuse, ancien
+  // chemin (§38) : supprimée chez YouTube puis renvoyée pour le nouvel horaire.
+  const movedIds: string[] = [];
+  for (const target of post.postTargets) {
+    const newTime = targetTimes[target.platform];
+    if (
+      target.platform === "YOUTUBE" &&
+      target.status === "PLATFORM_SCHEDULED" &&
+      newTime &&
+      (await moveScheduledYouTubeVideo({ ...target, post: { userId: post.userId } }, newTime))
+    ) {
+      movedIds.push(target.id);
+    }
   }
-  return schedulePost(postId, newBase, scheduledTz, targetTimes);
+  const remaining = post.postTargets.filter(
+    (t) => !movedIds.includes(t.id) && t.status !== "PUBLISHED" && t.status !== "SENT_TO_INBOX"
+  );
+  if (remaining.length === 0) {
+    await db.post.update({ where: { id: postId }, data: { scheduledAt: newBase, scheduledTz } });
+    return {};
+  }
+
+  try {
+    await unschedulePost(postId, { keepTargetIds: movedIds });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Reprogrammation impossible.";
+    return { error: movedIds.length > 0 ? `${message} (la vidéo YouTube, elle, est déjà au nouvel horaire)` : message };
+  }
+  const result = await schedulePost(postId, newBase, scheduledTz, targetTimes);
+  if (result.error && movedIds.length > 0) {
+    // Le post vient de repasser en brouillon : la vidéo déplacée ne doit pas partir seule à la nouvelle heure.
+    try {
+      await unschedulePost(postId);
+    } catch {
+      return {
+        error: `${result.error} — attention : la vidéo reste programmée chez YouTube ; annulez-la (« Annuler la programmation ») ou supprimez-la dans YouTube Studio.`,
+      };
+    }
+  }
+  return result;
 }

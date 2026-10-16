@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { getPublicMediaUrl } from "@/lib/storage";
 import { PostComposerForm } from "@/components/composer/post-composer-form";
 import { SchedulePanel } from "@/components/composer/schedule-panel";
+import { YouTubeVideoEditor } from "@/components/composer/youtube-video-editor";
 import { deletePost } from "@/lib/actions/posts";
 import { ConfirmDeleteButton } from "@/components/ui/confirm-delete-button";
 import { StatusBadge, postStatusTone, postStatusLabel } from "@/components/ui/status-badge";
@@ -66,6 +67,10 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
   }));
 
   const isDraft = post.status === "DRAFT";
+  // Vidéo déjà chez YouTube (publiée, ou programmée là-bas, §38) : modifiable sur place (§39).
+  const youtubeVideoOnline = post.postTargets.some(
+    (t) => t.platform === "YOUTUBE" && t.platformPostId && (t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED")
+  );
   // Réel d'essai (§34) : rappelé en lecture seule, sinon rien ne le distingue d'un Reel classique.
   const igTrial = trialFromOptions(post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions);
 
@@ -169,6 +174,12 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
                 : "partagé à vos abonnés s’il marche bien."}
             </p>
           )}
+        </div>
+      )}
+
+      {youtubeVideoOnline && (
+        <div className="max-w-xl">
+          <YouTubeVideoEditor postId={post.id} timezone={user?.timezone ?? "Europe/Paris"} />
         </div>
       )}
 

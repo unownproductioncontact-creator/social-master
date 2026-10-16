@@ -1,6 +1,7 @@
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { SocialAccountCard } from "@/components/connections/social-account-card";
+import { editScopeStatus } from "@/lib/youtube-video-edit";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageHeader } from "@/components/layout/page-header";
 import { CheckCircle2, AlertTriangle } from "lucide-react";
@@ -54,6 +55,11 @@ export default async function ConnectionsPage({
           platformLabel="YouTube"
           connectUrl="/api/oauth/youtube/start"
           account={youtubeAccount}
+          notice={
+            youtubeAccount && editScopeStatus(youtubeAccount.grantedScopes) === "missing"
+              ? "Nouveau : modifier vos vidéos déjà en ligne (titre, description, visibilité, horaire). Cliquez sur « Reconnecter » et acceptez la modification des vidéos, une seule fois."
+              : undefined
+          }
         />
       </div>
     </div>

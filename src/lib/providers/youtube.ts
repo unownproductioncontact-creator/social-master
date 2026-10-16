@@ -4,6 +4,7 @@ import { appUrl } from "@/lib/app-url";
 import { YOUTUBE_TITLE_MAX_LENGTH } from "@/lib/content-type";
 import type { YouTubePrivacyStatus } from "@/lib/youtube-options";
 import { readThumbnailUrls, type ThumbnailUrls } from "@/lib/youtube-thumbnail";
+import { readVideoDetails, type YouTubeVideoDetails } from "@/lib/youtube-video-edit";
 
 // Endpoints vérifiés le 11/07/2026 (docs officielles Google, cf. CLAUDE.md §25).
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -13,6 +14,8 @@ const RESUMABLE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/video
 // Vérifiés le 13/10/2026 (CLAUDE.md §37) : pose de miniature (upload simple) et lecture d'une vidéo.
 const THUMBNAIL_SET_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set";
 const VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos";
+// Vérifié le 16/10/2026 (CLAUDE.md §39) : vidéos de la chaîne = playlist « uploads » de channels.list.
+const PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems";
 
 const YOUTUBE_DESCRIPTION_MAX = 5000;
 // X-Upload-Content-Type / Content-Type du PUT quand le MIME réel du média n'est pas fourni.
@@ -21,9 +24,12 @@ const UPLOAD_CONTENT_TYPE_FALLBACK = "video/*";
 // Scopes (CLAUDE.md §25) : youtube.upload = publier (videos.insert), youtube.readonly = lire la chaîne
 // (channels.list mine=true, pour le nom/avatar affichés et le health-check « Vérifier »). Google veut
 // les scopes SÉPARÉS PAR DES ESPACES dans le paramètre `scope` (≠ TikTok/Instagram qui utilisent des virgules).
+// youtube.force-ssl (§39, 16/10/2026) = modifier/supprimer une vidéo existante (videos.update, videos.delete) :
+// youtube.upload ne le permet pas. Un compte connecté avant doit être reconnecté une fois.
 export const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/youtube.force-ssl",
 ];
 
 function getRedirectUri(): string {
@@ -433,4 +439,103 @@ export async function unscheduleYouTubeVideo(accessToken: string, videoId: strin
   if (!res.ok) {
     throw new Error(`Retrait de la programmation YouTube échoué (${res.status}): ${await res.text()}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Modification d'une vidéo déjà sur YouTube (CLAUDE.md §39) — lecture complète, liste des vidéos de la
+// chaîne, videos.update. Les règles (lecture-modification-écriture, limites) vivent dans youtube-video-edit.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Lecture complète d'une vidéo (videos.list part=snippet,status,contentDetails, 1 unité) : tout ce qu'il
+ * faut renvoyer à videos.update pour ne rien effacer. `null` si YouTube ne la montre pas à ce compte.
+ */
+export async function fetchYouTubeVideoDetails(
+  accessToken: string,
+  videoId: string,
+  signal?: AbortSignal
+): Promise<YouTubeVideoDetails | null> {
+  const url = new URL(VIDEOS_URL);
+  url.searchParams.set("part", "snippet,status,contentDetails");
+  url.searchParams.set("id", videoId);
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: signal ?? AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Lecture de la vidéo YouTube échouée (${res.status}): ${await res.text()}`);
+  }
+  const json = (await res.json()) as { items?: unknown[] };
+  return readVideoDetails(json.items?.[0]);
+}
+
+/**
+ * Dernières vidéos de la chaîne connectée, des plus récentes aux plus anciennes (privées et programmées
+ * comprises pour le propriétaire) : channels.list → playlist « uploads » → playlistItems.list →
+ * videos.list, 3 unités au total.
+ */
+export async function listYouTubeChannelVideos(accessToken: string, maxResults: number): Promise<YouTubeVideoDetails[]> {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const channelUrl = new URL(CHANNELS_URL);
+  channelUrl.searchParams.set("part", "contentDetails");
+  channelUrl.searchParams.set("mine", "true");
+  const channelRes = await fetch(channelUrl.toString(), { headers, signal: AbortSignal.timeout(15_000) });
+  if (!channelRes.ok) {
+    throw new Error(`Lecture de la chaîne YouTube échouée (${channelRes.status}): ${await channelRes.text()}`);
+  }
+  const channel = (await channelRes.json()) as {
+    items?: Array<{ contentDetails?: { relatedPlaylists?: { uploads?: string } } }>;
+  };
+  const uploads = channel.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploads) return [];
+
+  const itemsUrl = new URL(PLAYLIST_ITEMS_URL);
+  itemsUrl.searchParams.set("part", "contentDetails");
+  itemsUrl.searchParams.set("playlistId", uploads);
+  itemsUrl.searchParams.set("maxResults", String(Math.min(Math.max(maxResults, 1), 50)));
+  const itemsRes = await fetch(itemsUrl.toString(), { headers, signal: AbortSignal.timeout(15_000) });
+  if (!itemsRes.ok) {
+    throw new Error(`Liste des vidéos YouTube échouée (${itemsRes.status}): ${await itemsRes.text()}`);
+  }
+  const items = (await itemsRes.json()) as { items?: Array<{ contentDetails?: { videoId?: string } }> };
+  const ids = (items.items ?? []).map((i) => i.contentDetails?.videoId).filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return [];
+
+  const videosUrl = new URL(VIDEOS_URL);
+  videosUrl.searchParams.set("part", "snippet,status,contentDetails");
+  videosUrl.searchParams.set("id", ids.join(","));
+  const videosRes = await fetch(videosUrl.toString(), { headers, signal: AbortSignal.timeout(15_000) });
+  if (!videosRes.ok) {
+    throw new Error(`Lecture des vidéos YouTube échouée (${videosRes.status}): ${await videosRes.text()}`);
+  }
+  const videos = (await videosRes.json()) as { items?: unknown[] };
+  const byId = new Map(
+    (videos.items ?? []).map(readVideoDetails).filter((v): v is YouTubeVideoDetails => v !== null).map((v) => [v.id, v])
+  );
+  // Ordre de la playlist (du plus récent au plus ancien) ; une vidéo supprimée entre-temps disparaît.
+  return ids.map((id) => byId.get(id)).filter((v): v is YouTubeVideoDetails => v !== undefined);
+}
+
+/**
+ * videos.update (50 unités) avec les parties et le corps préparés par `planVideoUpdate`. Renvoie la
+ * ressource mise à jour (seulement les parties envoyées). Erreur au format
+ * `Modification de la vidéo YouTube refusée (<HTTP>): <corps>` pour `classifyVideoEditError`.
+ */
+export async function updateYouTubeVideo(
+  accessToken: string,
+  parts: ReadonlyArray<"snippet" | "status">,
+  body: Record<string, unknown>
+): Promise<unknown> {
+  const url = new URL(VIDEOS_URL);
+  url.searchParams.set("part", parts.join(","));
+  const res = await fetch(url.toString(), {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Modification de la vidéo YouTube refusée (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
 }

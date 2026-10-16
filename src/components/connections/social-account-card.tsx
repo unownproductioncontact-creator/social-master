@@ -27,12 +27,16 @@ export function SocialAccountCard({
   platformLabel,
   connectUrl,
   account,
+  notice,
 }: {
   platformLabel: string;
   connectUrl: string;
   account: ConnectedAccount | null;
+  /** Action recommandée sur un compte actif (ex. autorisation à compléter) : met « Reconnecter » en avant. */
+  notice?: string;
 }) {
   const platformKey = platformLabel.toUpperCase();
+  const needsAction = account ? account.status !== "ACTIVE" || Boolean(notice) : false;
 
   return (
     <Card className="gap-0 px-4 py-4">
@@ -78,7 +82,7 @@ export function SocialAccountCard({
               <a
                 href={connectUrl}
                 className={cn(
-                  buttonVariants({ variant: account.status !== "ACTIVE" ? "default" : "outline", size: "sm" }),
+                  buttonVariants({ variant: needsAction ? "default" : "outline", size: "sm" }),
                   "text-[12.5px]"
                 )}
               >
@@ -95,7 +99,10 @@ export function SocialAccountCard({
               />
             </div>
           </div>
-          {account.status !== "ACTIVE" && (
+          {notice && account.status === "ACTIVE" && (
+            <p className="text-[12.5px] text-amber-700 dark:text-amber-400">{notice}</p>
+          )}
+          {needsAction && (
             <p className="text-[12.5px] text-muted-foreground">
               Reconnexion sans perte : votre historique de publications est conservé.
             </p>

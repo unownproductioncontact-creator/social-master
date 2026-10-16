@@ -37,10 +37,16 @@ export async function scheduledDelivery(postTargetId: string): Promise<DeliveryP
  *  - encore privée → suppression (elle n'a jamais été publique) ; en cas d'échec, retrait de la date de
  *    publication (elle reste privée, jamais publiée) ; si les deux échouent → erreur ;
  *  - déjà absente → rien à faire.
+ * `keepTargetIds` : cibles déjà déplacées sur place par une reprogrammation (§39), à ne pas toucher.
  */
-export async function cancelScheduledYouTubeVideos(postId: string): Promise<void> {
+export async function cancelScheduledYouTubeVideos(postId: string, keepTargetIds: readonly string[] = []): Promise<void> {
   const targets = await db.postTarget.findMany({
-    where: { postId, platform: "YOUTUBE", status: "PLATFORM_SCHEDULED" },
+    where: {
+      postId,
+      platform: "YOUTUBE",
+      status: "PLATFORM_SCHEDULED",
+      ...(keepTargetIds.length > 0 ? { id: { notIn: [...keepTargetIds] } } : {}),
+    },
     include: { socialAccount: true, post: { select: { userId: true } } },
   });
   for (const target of targets) {

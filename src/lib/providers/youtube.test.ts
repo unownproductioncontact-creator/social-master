@@ -17,7 +17,11 @@ import {
   fetchYouTubeVideoSummary,
   deleteYouTubeVideo,
   unscheduleYouTubeVideo,
+  fetchYouTubeVideoDetails,
+  listYouTubeChannelVideos,
+  updateYouTubeVideo,
 } from "@/lib/providers/youtube";
+import { classifyVideoEditError } from "@/lib/youtube-video-edit";
 import { classifyThumbnailError } from "@/lib/youtube-thumbnail";
 import { resolveYouTubeTitle, youtubeTitleFallback } from "@/lib/content-type";
 import { getObjectStream, mediaWorkerPushConfig } from "@/lib/storage";
@@ -86,8 +90,9 @@ describe("OAuth / chaîne", () => {
     expect(u.searchParams.get("client_id")).toBe("gci");
     expect(u.searchParams.get("response_type")).toBe("code");
     // Google veut les scopes séparés par des espaces (≠ TikTok/Instagram en virgules).
+    // youtube.force-ssl (§39) : modifier une vidéo existante — youtube.upload ne le permet pas.
     expect(u.searchParams.get("scope")).toBe(
-      "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+      "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl"
     );
     expect(u.searchParams.get("access_type")).toBe("offline");
     expect(u.searchParams.get("prompt")).toBe("consent");
@@ -452,5 +457,69 @@ describe("Programmation native (§38)", () => {
     expect(call.method).toBe("PUT");
     expect(new URL(call.url).searchParams.get("part")).toBe("status");
     expect(JSON.parse(call.body!)).toEqual({ id: "vid_sched", status: { privacyStatus: "private", selfDeclaredMadeForKids: false } });
+  });
+});
+
+describe("Modification d'une vidéo existante (§39)", () => {
+  const resource = {
+    id: "vid_edit",
+    snippet: { channelId: "UC1", title: "Titre", description: "Desc", tags: ["pokemon"], categoryId: "20", publishedAt: "2026-10-15T16:00:00Z" },
+    status: { privacyStatus: "public", uploadStatus: "processed", embeddable: true, license: "youtube", publicStatsViewable: true },
+    contentDetails: { duration: "PT58S" },
+  };
+
+  it("lecture complète : videos.list part=snippet,status,contentDetails ; absente → null ; erreur → code HTTP", async () => {
+    mockFetch(() => res({ items: [resource] }));
+    const details = await fetchYouTubeVideoDetails("at", "vid_edit");
+    const url = new URL(calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://www.googleapis.com/youtube/v3/videos");
+    expect(url.searchParams.get("part")).toBe("snippet,status,contentDetails");
+    expect(url.searchParams.get("id")).toBe("vid_edit");
+    expect(calls[0].headers.Authorization).toBe("Bearer at");
+    expect(details).toMatchObject({ id: "vid_edit", channelId: "UC1", title: "Titre", tags: ["pokemon"], durationSec: 58 });
+
+    mockFetch(() => res({ items: [] }));
+    expect(await fetchYouTubeVideoDetails("at", "gone")).toBeNull();
+    mockFetch(() => res({ error: { code: 401 } }, { ok: false, status: 401 }));
+    await expect(fetchYouTubeVideoDetails("at", "x")).rejects.toThrow(/\(401\)/);
+  });
+
+  it("vidéos de la chaîne : playlist « uploads » → identifiants → détails, dans l'ordre de la playlist", async () => {
+    mockFetch((url) => {
+      if (url.includes("/channels")) return res({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU1" } } }] });
+      if (url.includes("/playlistItems")) {
+        return res({ items: [{ contentDetails: { videoId: "new_vid" } }, { contentDetails: { videoId: "old_vid" } }] });
+      }
+      return res({ items: [{ ...resource, id: "old_vid" }, { ...resource, id: "new_vid" }] });
+    });
+    const videos = await listYouTubeChannelVideos("at", 15);
+    expect(videos.map((v) => v.id)).toEqual(["new_vid", "old_vid"]);
+    expect(new URL(calls[0].url).searchParams.get("mine")).toBe("true");
+    expect(new URL(calls[1].url).searchParams.get("playlistId")).toBe("UU1");
+    expect(new URL(calls[1].url).searchParams.get("maxResults")).toBe("15");
+    expect(new URL(calls[2].url).searchParams.get("id")).toBe("new_vid,old_vid");
+
+    mockFetch(() => res({ items: [{}] }));
+    expect(await listYouTubeChannelVideos("at", 5)).toEqual([]);
+  });
+
+  it("videos.update : PUT part=… avec le corps préparé ; refus → erreur classable", async () => {
+    mockFetch(() => res({ id: "vid_edit", snippet: { title: "Nouveau" } }));
+    const body = { id: "vid_edit", snippet: { title: "Nouveau", description: "Desc", categoryId: "20" } };
+    expect(await updateYouTubeVideo("at", ["snippet"], body)).toEqual({ id: "vid_edit", snippet: { title: "Nouveau" } });
+    expect(calls[0].method).toBe("PUT");
+    expect(new URL(calls[0].url).searchParams.get("part")).toBe("snippet");
+    expect(calls[0].headers["Content-Type"]).toBe("application/json; charset=UTF-8");
+    expect(JSON.parse(calls[0].body!)).toEqual(body);
+
+    mockFetch(() =>
+      res(
+        { error: { code: 403, message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }] } },
+        { ok: false, status: 403 }
+      )
+    );
+    const err = await updateYouTubeVideo("at", ["status"], { id: "x", status: {} }).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/Modification de la vidéo YouTube refusée \(403\)/);
+    expect(classifyVideoEditError(err).code).toBe("yt_edit_scope");
   });
 });
