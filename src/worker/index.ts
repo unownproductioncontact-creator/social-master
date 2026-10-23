@@ -11,6 +11,7 @@ import {
   ORPHAN_SWEEP_QUEUE,
   YOUTUBE_THUMBNAIL_QUEUE,
   YOUTUBE_PUBLICATION_QUEUE,
+  POLLING_INTERVAL_SECONDS,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
 import { runReconciliation } from "@/worker/reconcile-job";
@@ -68,35 +69,40 @@ export async function startWorker(): Promise<void> {
   // programme lui-même le suivant ; la réconciliation rattrape un job perdu.
   await boss.createQueue(YOUTUBE_PUBLICATION_QUEUE, { retryLimit: 1, retryDelay: 60, expireInSeconds: 300 });
 
+  // Chaque file interroge la base à son propre rythme (§42), jamais au défaut de 2 s.
+  const every = (queue: keyof typeof POLLING_INTERVAL_SECONDS) => ({
+    pollingIntervalSeconds: POLLING_INTERVAL_SECONDS[queue],
+  });
+
   await boss.work(
     PUBLISH_QUEUE,
-    { batchSize: 1, includeMetadata: true, perJobResults: true },
+    { ...every(PUBLISH_QUEUE), batchSize: 1, includeMetadata: true, perJobResults: true },
     handlePublishBatch
   );
 
-  await boss.work(RECONCILE_QUEUE, async () => {
+  await boss.work(RECONCILE_QUEUE, every(RECONCILE_QUEUE), async () => {
     await runReconciliation();
   });
 
-  await boss.work(TOKEN_REFRESH_QUEUE, async () => {
+  await boss.work(TOKEN_REFRESH_QUEUE, every(TOKEN_REFRESH_QUEUE), async () => {
     await runTokenRefresh();
   });
 
-  await boss.work(STORAGE_CHECK_QUEUE, async () => {
+  await boss.work(STORAGE_CHECK_QUEUE, every(STORAGE_CHECK_QUEUE), async () => {
     await runStorageCheck();
   });
 
-  await boss.work(MEDIA_CLEANUP_QUEUE, async () => {
+  await boss.work(MEDIA_CLEANUP_QUEUE, every(MEDIA_CLEANUP_QUEUE), async () => {
     await runMediaCleanup();
   });
 
-  await boss.work(ORPHAN_SWEEP_QUEUE, async () => {
+  await boss.work(ORPHAN_SWEEP_QUEUE, every(ORPHAN_SWEEP_QUEUE), async () => {
     await runOrphanSweep();
   });
 
   await boss.work(
     MEDIA_IMPORT_QUEUE,
-    { batchSize: 1, includeMetadata: true },
+    { ...every(MEDIA_IMPORT_QUEUE), batchSize: 1, includeMetadata: true },
     async ([job]: JobWithMetadata<{ mediaAssetId: string }>[]) => {
       await runMediaImport(job.data.mediaAssetId, job.retryCount >= job.retryLimit);
     }
@@ -104,7 +110,7 @@ export async function startWorker(): Promise<void> {
 
   await boss.work(
     YOUTUBE_THUMBNAIL_QUEUE,
-    { batchSize: 1 },
+    { ...every(YOUTUBE_THUMBNAIL_QUEUE), batchSize: 1 },
     async ([job]: Job<ThumbnailJobData>[]) => {
       await runYouTubeThumbnailRetry(job.data);
     }
@@ -112,7 +118,7 @@ export async function startWorker(): Promise<void> {
 
   await boss.work(
     YOUTUBE_PUBLICATION_QUEUE,
-    { batchSize: 1 },
+    { ...every(YOUTUBE_PUBLICATION_QUEUE), batchSize: 1 },
     async ([job]: Job<PublicationJobData>[]) => {
       await runYouTubePublicationCheck(job.data);
     }
