@@ -92,13 +92,15 @@ async function scheduleWithRetry(...args: Parameters<typeof schedulePost>) {
   let lastResult: Awaited<ReturnType<typeof schedulePost>> | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     lastResult = await schedulePost(...args);
-    if (!lastResult.error?.includes("bind message")) return lastResult;
+    if (!lastResult.error || !KNOWN_LOCAL_ENGINE_QUIRK.test(lastResult.error)) return lastResult;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return lastResult!;
 }
 
-const KNOWN_LOCAL_ENGINE_QUIRK = /bind message/;
+// Artefacts du moteur `prisma dev` local (jamais vus sur un vrai Postgres, CLAUDE.md §16) : « bind message »,
+// « unnamed prepared statement does not exist », « portal … does not exist ».
+const KNOWN_LOCAL_ENGINE_QUIRK = /bind message|prepared statement|portal .* does not exist/;
 
 async function createDraftPost() {
   const post = await db.post.create({
@@ -119,7 +121,7 @@ async function createDraftPost() {
 }
 
 /** Post à DEUX cibles (TikTok + Instagram) pour tester les horaires décalés par plateforme. */
-async function createDualTargetPost() {
+async function createDualTargetPost(tiktokOptions: Record<string, string> = {}) {
   const post = await db.post.create({
     data: { userId, caption: "Test offsets par cible", status: "DRAFT" },
   });
@@ -132,6 +134,7 @@ async function createDualTargetPost() {
       contentType: "TIKTOK_VIDEO",
       publishMode: "TIKTOK_DRAFT",
       status: "PENDING",
+      platformOptions: tiktokOptions,
     },
   });
   const igTarget = await db.postTarget.create({
@@ -240,12 +243,45 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
     await db.post.delete({ where: { id: postId } });
   });
 
-  it("brouillon TikTok déposé IMMÉDIATEMENT même quand le post est programmé ; Instagram garde son horaire", async () => {
+  it("brouillon TikTok déposé À L'HEURE PRÉVUE (défaut, §41) ; Instagram garde son horaire décalé", async () => {
     const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
 
-    // Base à H+10min ; Instagram décalé à H+15min. Le brouillon TikTok (TIKTOK_DRAFT), lui, part MAINTENANT.
     const baseTime = new Date(Date.now() + 10 * 60 * 1000);
-    const tiktokTime = baseTime; // volontairement ignoré : un brouillon TikTok est déposé tout de suite
+    const tiktokTime = baseTime;
+    const instagramTime = new Date(baseTime.getTime() + 300 * 1000);
+
+    const result = await scheduleWithRetry(dualPostId, baseTime, "Europe/Paris", {
+      TIKTOK: tiktokTime,
+      INSTAGRAM: instagramTime,
+    });
+    if (result.error && KNOWN_LOCAL_ENGINE_QUIRK.test(result.error)) {
+      // eslint-disable-next-line no-console
+      console.warn("[scheduler.test.ts] Limitation connue du moteur prisma dev local rencontrée (brouillon TikTok à l'heure) — non concluant ici.");
+      await db.post.delete({ where: { id: dualPostId } }).catch(() => {});
+      return;
+    }
+    expect(result.error).toBeUndefined();
+
+    // TikTok : horaire effectif ET job à l'heure prévue — plus de dépôt anticipé.
+    const tiktokTarget = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
+    expect(tiktokTarget.scheduledAt?.getTime()).toBe(tiktokTime.getTime());
+    const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
+    expect(tiktokJob.runAt.getTime()).toBe(tiktokTime.getTime());
+    // Instagram : son horaire décalé.
+    const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
+    expect(igJob.runAt.getTime()).toBe(instagramTime.getTime());
+
+    await unschedulePost(dualPostId);
+    expect((await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } })).scheduledAt).toBeNull();
+    await db.post.delete({ where: { id: dualPostId } });
+  });
+
+  it("draftTiming « now » : brouillon TikTok déposé tout de suite même quand le post est programmé ; Instagram garde son horaire", async () => {
+    const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost({ draftTiming: "now" });
+
+    // Base à H+10min ; Instagram décalé à H+15min. Le brouillon TikTok demandé « tout de suite » part MAINTENANT.
+    const baseTime = new Date(Date.now() + 10 * 60 * 1000);
+    const tiktokTime = baseTime; // volontairement ignoré : dépôt immédiat demandé
     const instagramTime = new Date(baseTime.getTime() + 300 * 1000);
     const callMs = Date.now();
 
@@ -267,7 +303,7 @@ describe("schedulePost / unschedulePost (intégration DB + pg-boss)", () => {
 
     const tiktokTarget = await db.postTarget.findUniqueOrThrow({ where: { id: tiktokTargetId } });
     const igTarget = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
-    // TikTok (brouillon) : horaire effectif = MAINTENANT (≈ instant de l'appel), PAS l'horaire programmé.
+    // TikTok (brouillon immédiat) : horaire effectif = MAINTENANT (≈ instant de l'appel), PAS l'horaire programmé.
     expect(tiktokTarget.scheduledAt!.getTime()).toBeGreaterThanOrEqual(callMs - 5000);
     expect(tiktokTarget.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
     expect(tiktokTarget.scheduledAt!.getTime()).not.toBe(tiktokTime.getTime());
@@ -376,7 +412,7 @@ describe("unschedulePost / reschedulePost — anti-double-publication & modif ho
     await db.post.delete({ where: { id: post.id } });
   });
 
-  it("reschedulePost décale l'horaire programmé d'Instagram ; le brouillon TikTok reste un dépôt immédiat", async () => {
+  it("reschedulePost décale Instagram ET le brouillon TikTok, déposé à l'heure prévue (§41)", async () => {
     const { postId: dualPostId, tiktokTargetId, igTargetId } = await createDualTargetPost();
 
     const base = new Date(Date.now() + 20 * 60 * 1000);
@@ -405,18 +441,17 @@ describe("unschedulePost / reschedulePost — anti-double-publication & modif ho
     const igAfter = await db.postTarget.findUniqueOrThrow({ where: { id: igTargetId } });
     // Instagram : décalé au nouvel horaire (base+2h) en conservant son offset de +5 min.
     expect(igAfter.scheduledAt?.getTime()).toBe(newBase.getTime() + 300 * 1000);
-    // TikTok (brouillon) : reste un dépôt IMMÉDIAT (≤ maintenant), pas repoussé au nouvel horaire.
-    expect(tiktokAfter.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
-    expect(tiktokAfter.scheduledAt!.getTime()).not.toBe(newBase.getTime());
+    // TikTok (brouillon déposé à l'heure prévue) : suit le nouvel horaire de base.
+    expect(tiktokAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
 
     const postAfter = await db.post.findUniqueOrThrow({ where: { id: dualPostId } });
     expect(postAfter.status).toBe("SCHEDULED");
     expect(postAfter.scheduledAt?.getTime()).toBe(newBase.getTime());
 
-    // Les runAt des jobs : Instagram au nouvel horaire, TikTok tout de suite.
+    // Les runAt des jobs : Instagram au nouvel horaire (+5 min), TikTok au nouvel horaire de base.
     const tiktokJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: tiktokTargetId } });
     const igJob = await db.publishJob.findFirstOrThrow({ where: { postTargetId: igTargetId } });
-    expect(tiktokJob.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tiktokJob.runAt.getTime()).toBe(newBase.getTime());
     expect(igJob.runAt.getTime()).toBe(newBase.getTime() + 300 * 1000);
 
     await unschedulePost(dualPostId);

@@ -181,13 +181,15 @@ export type ScheduleManyResult =
  * item à la programmation) — le pré-check ne doit jamais jeter.
  */
 function newTikTokTimesMs(items: BulkItem[]): number[] {
-  // ⚡ Brouillon TikTok = dépôt IMMÉDIAT (cf. schedulePost) : en mode brouillon, chaque cible TikTok du
-  // lot est déposée MAINTENANT, quel que soit l'horaire programmé du post. Le pré-check fenêtré doit
-  // donc mesurer tous ces brouillons autour de « maintenant » (et non de leurs horaires programmés) —
-  // sinon un lot de > 5 vidéos TikTok « étalées » passerait le pré-check puis échouerait item par item
-  // au plafond 5/24 h. On les ancre tous sur `now` pour un blocage upfront clair et cohérent.
-  const nowMs = Date.now();
-  return items.filter((item) => item.platforms.tiktok).map(() => nowMs);
+  // ⏰ Brouillon TikTok déposé À L'HEURE PRÉVUE (§41, défaut des cibles créées par le lot) : le pré-check
+  // mesure chaque brouillon à l'horaire TikTok effectif de son item — un lot étalé sur plusieurs jours
+  // ne bloque donc plus à tort au plafond 5/24 h.
+  return items.flatMap((item) => {
+    if (!item.platforms.tiktok) return [];
+    const computed = computeTargetTimes(item.baseTime, item.platforms, item.timing);
+    if ("error" in computed) return [];
+    return [(computed.targetTimes.TIKTOK ?? item.baseTime).getTime()];
+  });
 }
 
 /**

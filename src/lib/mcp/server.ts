@@ -11,6 +11,7 @@ import {
   unschedulePostForUser,
 } from "@/lib/post-service";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
+import { TIKTOK_DRAFT_TIMINGS, tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
 import { TRIAL_STRATEGY_BY_CHOICE, trialChoice, trialFromOptions } from "@/lib/instagram-trial";
 import { appUrl } from "@/lib/app-url";
 import { buildStorageKey } from "@/lib/storage";
@@ -45,7 +46,7 @@ import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
 function instructions(app: string): string {
   return `Social Master planifie les publications Instagram, TikTok, YouTube Shorts et Page Facebook de l'utilisateur. Adresse de l'app : ${app} (seule adresse valide — ne pas en proposer d'autre).
 - Les heures sont TOUJOURS exprimées dans le fuseau de l'utilisateur (indiqué par get_overview), au format « AAAA-MM-JJTHH:mm » en entrée.
-- TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app (immédiatement, même si le post est programmé plus tard).
+- TikTok : la vidéo est déposée en BROUILLON dans la boîte de réception TikTok de l'utilisateur, qui la publie lui-même depuis l'app. Par défaut le brouillon est déposé À L'HEURE PRÉVUE (avec une notification Telegram contenant la légende) ; tiktok_draft_timing = "now" le dépose dès la programmation. Pour un horaire TikTok différent des autres plateformes, faire un post TikTok séparé.
 - YouTube programmé (vidéo publique, au moins 15 min à l'avance) : la vidéo est envoyée tout de suite chez YouTube, en privé avec la date de publication ; YouTube la publie lui-même à l'heure prévue, miniature déjà posée.
 - Instagram, YouTube et Facebook : publication PUBLIQUE et automatique à l'heure prévue (ou tout de suite avec publish_post_now).
 - Facebook (Page) : une vidéo verticale de 3 à 90 s part en Reel, une autre vidéo en vidéo classique ; une photo, ou plusieurs photos (2 à 10) dans une même publication. Même légende et hashtags que les autres plateformes.
@@ -367,7 +368,9 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           content_type: t.contentType,
           mode:
             t.publishMode === "TIKTOK_DRAFT"
-              ? "brouillon TikTok (inbox)"
+              ? tiktokDraftTimingFromOptions(t.platformOptions) === "now"
+                ? "brouillon TikTok (inbox), déposé dès la programmation"
+                : "brouillon TikTok (inbox), déposé à l'heure prévue"
               : t.status === "PLATFORM_SCHEDULED"
                 ? `programmée chez YouTube : vidéo déjà envoyée, privée, que YouTube rend publique le ${fmt(t.scheduledAt)}`
                 : "publication directe",
@@ -503,6 +506,12 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         instagram: z.boolean().default(false),
         instagram_story: z.boolean().default(false).describe("Publier en Story plutôt qu'en post/Reel (1 seul média)"),
         tiktok: z.boolean().default(false).describe("Envoi en brouillon dans la boîte de réception TikTok"),
+        tiktok_draft_timing: z
+          .enum(TIKTOK_DRAFT_TIMINGS)
+          .optional()
+          .describe(
+            "Moment du dépôt du brouillon TikTok : scheduled (défaut) = à l'heure programmée du post ; now = dès la programmation. Absent en modification = inchangé"
+          ),
         youtube: z.boolean().default(false).describe("YouTube Short (exactement 1 vidéo)"),
         facebook: z
           .boolean()
@@ -562,6 +571,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         targetInstagram: args.instagram || args.instagram_story,
         targetInstagramStory: args.instagram_story,
         targetTiktok: args.tiktok,
+        tiktokDraftTiming: args.tiktok_draft_timing,
         targetYoutube: args.youtube,
         targetFacebook: args.facebook,
         youtubeTitle: args.youtube_title ?? null,
@@ -732,7 +742,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Programmer un brouillon",
       description:
-        "Programme un brouillon à une heure locale. Instagram partira publiquement à cette heure ; TikTok reçoit le brouillon immédiatement. YouTube (vidéo publique programmée au moins 15 min à l'avance) : la vidéo part TOUT DE SUITE chez YouTube, en privé avec cette date de publication — sa miniature est posée dès qu'elle est traitée et c'est YouTube qui la rend publique à l'heure prévue (cible « PLATFORM_SCHEDULED » dans get_post, puis « PUBLISHED »). Confirmer avec l'utilisateur avant d'appeler.",
+        "Programme un brouillon à une heure locale. Instagram partira publiquement à cette heure ; le brouillon TikTok est déposé dans la boîte de réception TikTok à cette heure (ou tout de suite si tiktok_draft_timing = now). YouTube (vidéo publique programmée au moins 15 min à l'avance) : la vidéo part TOUT DE SUITE chez YouTube, en privé avec cette date de publication — sa miniature est posée dès qu'elle est traitée et c'est YouTube qui la rend publique à l'heure prévue (cible « PLATFORM_SCHEDULED » dans get_post, puis « PUBLISHED »). Confirmer avec l'utilisateur avant d'appeler.",
       inputSchema: { post_id: z.string().min(1), datetime: DATETIME_LOCAL },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },

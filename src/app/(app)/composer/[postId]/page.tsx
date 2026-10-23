@@ -16,6 +16,7 @@ import { CopyCaptionButton } from "@/components/history/copy-caption-button";
 import { AutoRefresh } from "@/components/util/auto-refresh";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
+import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -148,6 +149,9 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             targetInstagram: post.postTargets.some((t) => t.platform === "INSTAGRAM"),
             targetInstagramStory: post.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
             targetTiktok: post.postTargets.some((t) => t.platform === "TIKTOK"),
+            tiktokDraftTiming: tiktokDraftTimingFromOptions(
+              post.postTargets.find((t) => t.platform === "TIKTOK")?.platformOptions
+            ),
             targetYoutube: post.postTargets.some((t) => t.platform === "YOUTUBE"),
             targetFacebook: post.postTargets.some((t) => t.platform === "FACEBOOK"),
             youtubeTitle:

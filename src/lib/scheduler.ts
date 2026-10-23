@@ -6,6 +6,7 @@ import { checkTikTokDraftCapacityAt } from "@/lib/quota";
 import { youtubePrivacyFromOptions } from "@/lib/youtube-options";
 import { schedulesOnYouTube } from "@/lib/youtube-scheduling";
 import { cancelScheduledYouTubeVideos } from "@/lib/youtube-scheduled-video";
+import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
 import { moveScheduledYouTubeVideo } from "@/lib/youtube-video-edit-service";
 import { getBoss, dbFromPrismaTx, PUBLISH_QUEUE } from "@/worker/boss";
 
@@ -63,16 +64,14 @@ export async function schedulePost(
   type SchedulableTarget = (typeof schedulableTargets)[number];
 
   // Horaire effectif de chaque cible.
-  // ⚡ BROUILLON TIKTOK = DÉPÔT IMMÉDIAT : tant que l'app TikTok n'est pas approuvée en Direct Post, une
-  // cible TikTok en mode brouillon (publishMode `TIKTOK_DRAFT`) est déposée dans la boîte de réception
-  // TikTok TOUT DE SUITE, même si le post est programmé pour plus tard. En mode brouillon, c'est
-  // l'utilisateur qui publie lui-même depuis l'app TikTok au moment voulu → retarder le DÉPÔT du
-  // brouillon n'a aucun intérêt (demande du user). Instagram/YouTube gardent leur horaire programmé.
-  // Se neutralise seul dès le passage en Direct Post (le publishMode ne sera plus `TIKTOK_DRAFT`).
+  // ⏰ BROUILLON TIKTOK (§41, 23/10/2026) : déposé dans la boîte de réception TikTok À L'HEURE PRÉVUE de
+  // la cible (défaut, demande du user : le brouillon arrive quand il faut le publier), ou TOUT DE SUITE
+  // si la cible le demande (`platformOptions.draftTiming = "now"`, ancien comportement du 08/07).
   // `options.immediate` (« Publier maintenant ») force EN PLUS toutes les cibles à maintenant.
   const now = new Date();
   const isImmediateTarget = (t: SchedulableTarget): boolean =>
-    options?.immediate === true || (t.platform === "TIKTOK" && t.publishMode === "TIKTOK_DRAFT");
+    options?.immediate === true ||
+    (t.platform === "TIKTOK" && t.publishMode === "TIKTOK_DRAFT" && tiktokDraftTimingFromOptions(t.platformOptions) === "now");
   const effectiveTimeFor = (t: SchedulableTarget): Date =>
     isImmediateTarget(t) ? now : targetTimes?.[t.platform] ?? scheduledAt;
   // 📅 YOUTUBE = PROGRAMMATION NATIVE (§38) : une vidéo publique programmée au moins 15 min à l'avance
@@ -91,7 +90,7 @@ export async function schedulePost(
 
   // La validation « ≥ 60s dans le futur » ne concerne QUE les cibles réellement PROGRAMMÉES (pas les
   // dépôts immédiats) : mesurée sur la cible programmée la plus tôt. Si toutes les cibles sont
-  // immédiates (brouillon TikTok seul, ou « Publier maintenant »), aucune contrainte de futur.
+  // immédiates (brouillon TikTok déposé tout de suite, ou « Publier maintenant »), aucune contrainte de futur.
   const scheduledTargets = schedulableTargets.filter((t) => !isImmediateTarget(t));
   if (scheduledTargets.length > 0) {
     const earliestScheduled = scheduledTargets.reduce(
@@ -114,7 +113,7 @@ export async function schedulePost(
   if (tiktokTarget) {
     const capacity = await checkTikTokDraftCapacityAt(
       { socialAccountId: tiktokTarget.socialAccountId },
-      effectiveTimeFor(tiktokTarget) // = maintenant (dépôt immédiat) tant qu'on est en mode brouillon
+      effectiveTimeFor(tiktokTarget) // heure du dépôt : prévue, ou maintenant si dépôt immédiat
     );
     if (!capacity.allowed) {
       return { error: capacity.message ?? "Plafond de brouillons TikTok atteint pour cet horaire." };

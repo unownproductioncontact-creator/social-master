@@ -35,6 +35,7 @@ import {
   validateInstagramCollaborators,
 } from "@/lib/instagram-collaborators";
 import { INSTAGRAM_TRIAL_COLLABORATORS_ERROR, type InstagramTrialStrategy } from "@/lib/instagram-trial";
+import { TIKTOK_DRAFT_TIMING_LABELS, TIKTOK_DRAFT_TIMINGS, type TikTokDraftTiming } from "@/lib/tiktok-options";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
@@ -57,6 +58,8 @@ type MediaOption = {
 };
 
 /** Réel d'essai (§34) : « OFF » = Reel classique, sinon la stratégie Meta de partage aux abonnés. */
+const TIKTOK_TIMING_OPTIONS = TIKTOK_DRAFT_TIMINGS.map((value) => ({ value, label: TIKTOK_DRAFT_TIMING_LABELS[value] }));
+
 const IG_TRIAL_OPTIONS = [
   { value: "OFF", label: "Non, Reel classique" },
   { value: "MANUAL", label: "Oui, je le partage à mes abonnés depuis Instagram" },
@@ -121,6 +124,8 @@ export function PostComposerForm({
     targetTiktok?: boolean;
     targetYoutube?: boolean;
     targetFacebook?: boolean;
+    /** Moment du dépôt du brouillon TikTok (PostTarget.platformOptions.draftTiming, §41). */
+    tiktokDraftTiming?: TikTokDraftTiming;
     /** Titre YouTube explicite déjà saisi (PostTarget.platformOptions.title) — vide sinon. */
     youtubeTitle?: string;
     instagramCoverTimeMs?: number | null;
@@ -154,6 +159,7 @@ export function PostComposerForm({
   const [targetTiktok, setTargetTiktok] = useState(initialPost?.targetTiktok ?? tiktokConnected);
   const [targetYoutube, setTargetYoutube] = useState(initialPost?.targetYoutube ?? youtubeConnected);
   const [targetFacebook, setTargetFacebook] = useState(initialPost?.targetFacebook ?? facebookConnected);
+  const [tiktokDraftTiming, setTiktokDraftTiming] = useState<TikTokDraftTiming>(initialPost?.tiktokDraftTiming ?? "scheduled");
   const [youtubeTitle, setYoutubeTitle] = useState(initialPost?.youtubeTitle ?? "");
   const [coverTimeMs, setCoverTimeMs] = useState<number | null>(initialPost?.instagramCoverTimeMs ?? null);
   const [collaboratorsText, setCollaboratorsText] = useState(
@@ -297,6 +303,7 @@ export function PostComposerForm({
         targetInstagram: igChecked,
         targetInstagramStory,
         targetTiktok: tiktokChecked,
+        tiktokDraftTiming: tiktokChecked ? tiktokDraftTiming : undefined,
         targetYoutube: youtubeChecked,
         targetFacebook: facebookChecked,
         // Titre envoyé UNIQUEMENT s'il est saisi (trim) et pertinent (case cochée/actionnable) : sinon le
@@ -544,6 +551,29 @@ export function PostComposerForm({
                 )}
               </Label>
             </div>
+            {tiktokChecked && !servedTiktok && (
+              <div className="ml-6 flex flex-wrap items-center gap-2">
+                <Label htmlFor="tiktok-draft-timing" className="text-[12.5px] font-normal text-muted-foreground">
+                  Brouillon déposé :
+                </Label>
+                <Select
+                  items={TIKTOK_TIMING_OPTIONS}
+                  value={tiktokDraftTiming}
+                  onValueChange={(v) => setTiktokDraftTiming(v as TikTokDraftTiming)}
+                >
+                  <SelectTrigger id="tiktok-draft-timing" size="sm" className="w-auto">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIKTOK_TIMING_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {servedTiktok && (
               <p className="ml-6 text-[11.5px] text-muted-foreground">Déjà envoyé en brouillon TikTok.</p>
             )}
@@ -715,11 +745,21 @@ export function PostComposerForm({
             <p className="text-[11.5px] text-muted-foreground">
               Laissez vide pour enregistrer un simple brouillon (vous le programmerez plus tard).
             </p>
-            {tiktokChecked && (
+            {tiktokChecked && !servedTiktok && (
               <p className="text-[11.5px] text-muted-foreground">
-                Le brouillon TikTok est déposé <span className="font-medium text-foreground">immédiatement</span> dans vos
-                notifications TikTok (vous le publiez depuis l’app quand vous voulez). L’horaire ci-dessus s’applique à
-                Instagram et YouTube.
+                {tiktokDraftTiming === "now" ? (
+                  <>
+                    Le brouillon TikTok est déposé <span className="font-medium text-foreground">dès la programmation</span>{" "}
+                    dans vos notifications TikTok (vous le publiez depuis l’app quand vous voulez). L’horaire ci-dessus
+                    s’applique aux autres plateformes.
+                  </>
+                ) : (
+                  <>
+                    Le brouillon TikTok arrive dans vos notifications TikTok{" "}
+                    <span className="font-medium text-foreground">à l’heure prévue</span>, avec la légende envoyée sur
+                    Telegram : il ne reste qu’à le publier depuis l’app.
+                  </>
+                )}
               </p>
             )}
             {quietWarning && (

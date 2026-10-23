@@ -10,6 +10,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
+import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -96,6 +97,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         targetInstagram: source.postTargets.some((t) => t.platform === "INSTAGRAM"),
         targetInstagramStory: source.postTargets.some((t) => t.platform === "INSTAGRAM" && t.contentType === "STORY"),
         targetTiktok: source.postTargets.some((t) => t.platform === "TIKTOK"),
+        tiktokDraftTiming: tiktokDraftTimingFromOptions(source.postTargets.find((t) => t.platform === "TIKTOK")?.platformOptions),
         targetYoutube: source.postTargets.some((t) => t.platform === "YOUTUBE"),
         targetFacebook: source.postTargets.some((t) => t.platform === "FACEBOOK"),
         youtubeTitle: (ytTarget?.platformOptions as { title?: string } | null)?.title ?? undefined,

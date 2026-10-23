@@ -332,15 +332,15 @@ describe("scheduleManyPosts (intégration DB + pg-boss)", () => {
     expect(result.failed).toBe(0);
     expect(result.results.every((r) => r.ok && r.postId)).toBe(true);
 
-    // Le brouillon TikTok est déposé IMMÉDIATEMENT (≤ maintenant) ; Instagram garde son horaire décalé
-    // (base + 300s de l'offset) — cf. schedulePost, dépôt TikTok immédiat en mode brouillon.
+    // Le brouillon TikTok est déposé À L'HEURE PRÉVUE (§41 : base, rang 0 de l'offset) ; Instagram garde
+    // son horaire décalé (base + 300s de l'offset).
     const firstPostId = result.results[0].postId!;
     const targets = await db.postTarget.findMany({ where: { postId: firstPostId } });
     const tiktokTarget = targets.find((t) => t.platform === "TIKTOK");
     const igTarget = targets.find((t) => t.platform === "INSTAGRAM");
     expect(tiktokTarget?.scheduledAt).toBeTruthy();
     expect(igTarget?.scheduledAt).toBeTruthy();
-    expect(tiktokTarget!.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tiktokTarget!.scheduledAt!.getTime()).toBe(base.getTime());
     expect(igTarget!.scheduledAt!.getTime()).toBe(base.getTime() + 300 * 1000);
 
     // Post.scheduledAt = horaire de base (inchangé par l'offset).
@@ -475,10 +475,9 @@ describe("scheduleManyPosts (intégration DB + pg-boss)", () => {
     const ttTarget = await db.postTarget.findFirstOrThrow({
       where: { postId: ttPostId, platform: "TIKTOK" },
     });
-    // ⚡ Brouillon TikTok = dépôt IMMÉDIAT : l'horaire custom fourni est volontairement ignoré (déposé
-    // maintenant, l'utilisateur publie depuis TikTok quand il veut). Instagram, lui, garde son horaire.
-    expect(ttTarget.scheduledAt!.getTime()).toBeLessThanOrEqual(Date.now());
-    expect(ttTarget.scheduledAt!.getTime()).not.toBe(tiktokTime.getTime());
+    // ⏰ Brouillon TikTok déposé À L'HEURE PRÉVUE (§41) : l'horaire custom TikTok est respecté.
+    // Instagram, lui, garde son horaire.
+    expect(ttTarget.scheduledAt!.getTime()).toBe(tiktokTime.getTime());
 
     const igTarget = await db.postTarget.findFirstOrThrow({
       where: { postId: igPostId, platform: "INSTAGRAM" },

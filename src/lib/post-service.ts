@@ -19,6 +19,7 @@ import {
   FACEBOOK_PHOTOS_MAX,
 } from "@/lib/content-type";
 import { SHORTS_THUMBNAIL_DISABLED_MESSAGE, thumbnailApiAllowed } from "@/lib/youtube-thumbnail";
+import { buildTikTokOptions, TIKTOK_DRAFT_TIMINGS, tiktokDraftTimingFromOptions, type TikTokDraftTiming } from "@/lib/tiktok-options";
 import {
   buildYouTubeOptions,
   YOUTUBE_PRIVACY_STATUSES,
@@ -66,6 +67,9 @@ const SavePostSchema = z.object({
   instagramCoverMediaId: z.string().min(1).nullish(),
   // Visibilité YouTube (§37) : même règle des trois états ; défaut public.
   youtubePrivacy: z.enum(YOUTUBE_PRIVACY_STATUSES).nullish(),
+  // Dépôt du brouillon TikTok (§41) : « scheduled » = à l'heure prévue (défaut), « now » = dès la
+  // programmation. Mêmes trois états : absent = on garde le choix du brouillon, null = défaut.
+  tiktokDraftTiming: z.enum(TIKTOK_DRAFT_TIMINGS).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -198,6 +202,10 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
     : data.youtubeThumbnailMediaId === undefined
       ? (previous("YOUTUBE")?.coverMediaAssetId ?? null)
       : data.youtubeThumbnailMediaId;
+  const tiktokDraftTiming: TikTokDraftTiming =
+    data.tiktokDraftTiming === undefined
+      ? tiktokDraftTimingFromOptions(previous("TIKTOK")?.platformOptions)
+      : (data.tiktokDraftTiming ?? "scheduled");
   const youtubePrivacy: YouTubePrivacyStatus =
     data.youtubePrivacy === undefined
       ? youtubePrivacyFromOptions(previous("YOUTUBE")?.platformOptions)
@@ -298,6 +306,8 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
           contentType: tiktokContentType,
           publishMode: "TIKTOK_DRAFT",
           status: "PENDING",
+          // Moment du dépôt dans la boîte de réception TikTok (§41) — écrit seulement s'il est immédiat.
+          platformOptions: buildTikTokOptions(tiktokDraftTiming),
         },
       });
     }
