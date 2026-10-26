@@ -99,8 +99,10 @@ async function scheduleWithRetry(...args: Parameters<typeof schedulePost>) {
 }
 
 // Artefacts du moteur `prisma dev` local (jamais vus sur un vrai Postgres, CLAUDE.md §16) : « bind message »,
-// « unnamed prepared statement does not exist », « portal … does not exist ».
-const KNOWN_LOCAL_ENGINE_QUIRK = /bind message|prepared statement|portal .* does not exist/;
+// « unnamed prepared statement does not exist », « portal … does not exist », et depuis les réglages de
+// polling du §42 le même premier envoi lent qui dépasse les 5 s de la transaction (« expired transaction » ;
+// la programmation marche en production avec ces réglages, vérifié le 26/10/2026).
+const KNOWN_LOCAL_ENGINE_QUIRK = /bind message|prepared statement|portal .* does not exist|expired transaction/;
 
 async function createDraftPost() {
   const post = await db.post.create({

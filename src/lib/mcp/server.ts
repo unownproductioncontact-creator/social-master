@@ -35,6 +35,13 @@ import {
 } from "@/lib/youtube-video-edit-service";
 import { RECONNECT_FOR_EDIT_MESSAGE, tagsLength, utf8Bytes, type VideoChange, type YouTubeVideoDetails } from "@/lib/youtube-video-edit";
 import { dbFromPrismaTx, getBoss, MEDIA_IMPORT_QUEUE } from "@/worker/boss";
+import {
+  getInstagramStatsForTarget,
+  getInstagramStatsForUser,
+  type InstagramMediaStatsView,
+} from "@/lib/instagram-stats-service";
+import { requestInstagramStats } from "@/lib/instagram-stats-queue";
+import { insightsScopeStatus, RECONNECT_FOR_STATS_MESSAGE, STATS_CAVEATS } from "@/lib/instagram-stats";
 
 /**
  * Serveur MCP du connecteur Claude (CLAUDE.md §29) — un serveur par requête (transport sans état),
@@ -53,6 +60,7 @@ function instructions(app: string): string {
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Miniature d'un Short YouTube : ${shortsThumbnailApiEnabled() ? "une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master dès que YouTube a traité la vidéo ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée ; état dans get_post (youtube_thumbnail), jamais bloquant pour la vidéo." : "DÉSACTIVÉE — YouTube n'affiche pas (ni sur la chaîne, ni dans la recherche) une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026) ; elle s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer). Ne pas proposer youtube_thumbnail_media_id ni set_youtube_thumbnail pour un Short."} Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
 - Vidéos déjà sur YouTube (publiées par Social Master ou non, chaîne connectée uniquement) : list_youtube_videos pour les retrouver, get_youtube_video pour lire titre/description/tags actuels, update_youtube_video pour changer titre, description, tags, visibilité ou date de publication d'une vidéo programmée. Le fichier vidéo lui-même ne peut pas être remplacé (YouTube ne le permet pas).
+- Statistiques Instagram (vues, portée, likes, commentaires, partages, enregistrements, temps de visionnage, taux de zapping des 3 premières secondes ; vues du compte jour par jour) : get_instagram_stats. Relevées automatiquement toutes les 6 h, pas en direct ; refresh_instagram_stats lance un relevé tout de suite. Vues = lectures organiques sur Instagram seulement (souvent moins que le chiffre de l'app) ; Meta annonce jusqu'à 48 h de retard.
 - Avant toute action qui publie, programme ou modifie une vidéo en ligne, résume à l'utilisateur ce qui va changer (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel ; pour une modification : avant → après) et attends sa confirmation.`;
 }
 
@@ -64,6 +72,41 @@ function ok(data: unknown): ToolResult {
 
 function fail(message: string): ToolResult {
   return { content: [{ type: "text", text: `Erreur : ${message}` }], isError: true };
+}
+
+/** Statistiques d'un média Instagram pour le connecteur (null = métrique non renvoyée par Meta, jamais 0). */
+function instagramStatsView(v: InstagramMediaStatsView, fmt: (d: Date | null | undefined) => string | null) {
+  return {
+    media_id: v.mediaId,
+    type: v.type === "REELS" ? "reel" : v.type === "FEED" ? "publication" : v.type,
+    posted_at: fmt(v.postedAt),
+    url: v.permalink ?? undefined,
+    caption: v.caption ?? undefined,
+    post_id: v.postId ?? undefined,
+    views: v.views,
+    reach: v.reach,
+    likes: v.likes,
+    comments: v.comments,
+    shares: v.shares,
+    saved: v.saved,
+    total_interactions: v.totalInteractions,
+    ...(v.type === "REELS"
+      ? {
+          avg_watch_time_s: v.avgWatchSeconds,
+          total_watch_time_h: v.totalWatchSeconds == null ? null : Math.round(v.totalWatchSeconds / 360) / 10,
+          skip_rate_pct: v.skipRatePct,
+        }
+      : {}),
+    ...(v.missing.length > 0 ? { missing_metrics: v.missing } : {}),
+    stats_at: fmt(v.fetchedAt) ?? "pas encore relevé",
+    ...(v.error ? { error: v.error } : {}),
+    ...(v.history
+      ? {
+          history: v.history.map((h) => ({ at: fmt(h.fetchedAt), age_hours: h.ageHours, ...h.metrics })),
+          history_note: "Valeurs brutes de Meta dans history (ig_reels_avg_watch_time en millisecondes supposées, reels_skip_rate à l'échelle de Meta).",
+        }
+      : {}),
+  };
 }
 
 /**
@@ -281,7 +324,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
     {
       title: "Détail d'une publication",
       description:
-        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes). Pour une cible publiée : delivered_via = « worker » (Worker Cloudflare, sortie gratuite) ou « render » (sortie facturée au-delà de 5 Go/mois), absent pour les publications faites avant la mise en place de ce suivi. Cible YouTube : youtube_visibility, youtube_thumbnail = { media_id, status PENDING | SET | FAILED, error, set_at } (statut SÉPARÉ de la vidéo) et, une fois publiée, youtube_live = ce que YouTube affiche en direct (visibilité, URLs des miniatures servies). Cible Instagram (Reel) : instagram_cover = image de couverture choisie et ce qui a réellement été utilisé.",
+        "Tout le détail d'un post : légende, hashtags, médias, cibles par plateforme (options, statut, erreur, lien). Pour un envoi TikTok : tiktok_reception = ce que TikTok a réellement reçu (received_bytes doit égaler expected_bytes). Pour une cible publiée : delivered_via = « worker » (Worker Cloudflare, sortie gratuite) ou « render » (sortie facturée au-delà de 5 Go/mois), absent pour les publications faites avant la mise en place de ce suivi. Cible YouTube : youtube_visibility, youtube_thumbnail = { media_id, status PENDING | SET | FAILED, error, set_at } (statut SÉPARÉ de la vidéo) et, une fois publiée, youtube_live = ce que YouTube affiche en direct (visibilité, URLs des miniatures servies). Cible Instagram (Reel) : instagram_cover = image de couverture choisie et ce qui a réellement été utilisé ; une fois publiée, instagram_stats = dernières statistiques relevées (voir get_instagram_stats).",
       inputSchema: { post_id: z.string().min(1) },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -314,6 +357,15 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           post.postTargets
             .filter((t) => t.platform === "YOUTUBE" && (t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED") && t.platformPostId)
             .map(async (t) => [t.id, await readYouTubeLive(t.socialAccount, t.platformPostId!, (iso) => fmt(new Date(iso)) ?? iso)] as const)
+        )
+      );
+      // Statistiques Instagram déjà relevées (§43, lecture en base, aucun appel à Meta).
+      const instagramStats = new Map(
+        await Promise.all(
+          post.postTargets
+            // Stories : jamais relevées (Meta ne les liste pas et ne les garde que 24 h).
+            .filter((t) => t.platform === "INSTAGRAM" && t.contentType !== "STORY" && t.status === "PUBLISHED" && t.platformPostId)
+            .map(async (t) => [t.id, await getInstagramStatsForTarget(t.socialAccountId, t.platformPostId!)] as const)
         )
       );
       // Par où est passé le fichier de chaque livraison (journal d'activité, §36) — le plus récent gagne.
@@ -412,6 +464,11 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                 }
               : undefined,
           youtube_live: youtubeLive.get(t.id),
+          instagram_stats: instagramStats.has(t.id)
+            ? instagramStats.get(t.id)
+              ? instagramStatsView(instagramStats.get(t.id)!, fmt)
+              : "pas encore relevées (relevé toutes les 6 h, après autorisation des statistiques)"
+            : undefined,
           tiktok_reception: receptions.get(t.id),
           delivered_via: deliveries.get(t.id)?.via,
           delivery: deliveries.has(t.id) ? describeDelivery(deliveries.get(t.id)!) : undefined,
@@ -796,6 +853,117 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       return result.error
         ? fail(result.error)
         : ok({ post_id, status: "SCHEDULED", note: "Publication lancée : suivre l'avancement avec get_post dans une à deux minutes." });
+    }
+  );
+
+  server.registerTool(
+    "get_instagram_stats",
+    {
+      title: "Statistiques Instagram",
+      description:
+        "Statistiques du compte Instagram connecté, relevées par Social Master toutes les 6 h (pas en direct) : pour chaque Reel ou publication (publié par Social Master ou non) vues, portée, likes, commentaires, partages, enregistrements, interactions, et pour un Reel temps de visionnage moyen et taux de zapping des 3 premières secondes (skip_rate_pct) ; vues et portée du compte jour par jour (journées Meta). media_total = nombre de médias de la période (la liste est limitée à limit : truncated). media = un identifiant de média, un post_id Social Master ou un lien instagram.com pour un seul média ; history (avec media seulement) = relevés successifs, la courbe des vues dans le temps.",
+      inputSchema: {
+        days: z.number().int().min(1).max(365).default(30).describe("Médias publiés depuis N jours, et N jours de statistiques du compte (90 max)."),
+        limit: z.number().int().min(1).max(100).default(30),
+        sort: z.enum(["recent", "views"]).default("recent"),
+        history: z.boolean().default(false),
+        media: z.string().min(1).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ days, limit, sort, history, media }) => {
+      if (history && !media) return fail("history n'est disponible que pour un seul média : préciser media (identifiant, post_id ou lien).");
+      let mediaId: string | undefined;
+      if (media) {
+        const target = await db.postTarget.findFirst({
+          where: { postId: media, platform: "INSTAGRAM", post: { userId } },
+          select: { platformPostId: true },
+        });
+        if (target) {
+          if (!target.platformPostId) return fail("Ce post n'est pas encore publié sur Instagram.");
+          mediaId = target.platformPostId;
+        } else if (media.startsWith("http")) {
+          // Lien collé depuis l'app (/reel/…, /p/…, avec ou sans pseudo ni ?igsh=) : on compare le code court.
+          const shortcode = media.match(/\/(?:reels?|p|tv)\/([A-Za-z0-9_-]+)/)?.[1];
+          const found = shortcode
+            ? await db.instagramMedia.findFirst({
+                where: {
+                  OR: [{ permalink: { contains: `/${shortcode}/` } }, { permalink: { endsWith: `/${shortcode}` } }],
+                  socialAccount: { userId },
+                },
+                select: { mediaId: true },
+              })
+            : null;
+          if (!found) return fail("Lien inconnu : ce média n'a pas encore été relevé (ou n'appartient pas au compte connecté).");
+          mediaId = found.mediaId;
+        } else {
+          mediaId = media;
+        }
+      }
+      const stats = await getInstagramStatsForUser(userId, { days, limit, sort, history, mediaId });
+      if (!stats.account) return fail("Aucun compte Instagram connecté.");
+      const state = stats.account.state;
+      return ok({
+        account: `@${stats.account.username}`,
+        stats_permission: stats.account.scope,
+        ...(stats.account.scope === "missing" ? { action_required: RECONNECT_FOR_STATS_MESSAGE } : {}),
+        last_collection: stats.account.collecting
+          ? "premier relevé en cours (quelques minutes après la reconnexion), réessayer ensuite"
+          : state
+            ? {
+                at: fmt(new Date(state.lastRunAt)),
+                ok: state.ok,
+                ...(state.error ? { error: state.error } : {}),
+                ...(state.mediaPending ? { media_waiting: state.mediaPending } : {}),
+              }
+            : "aucun relevé pour l'instant",
+        caveats: STATS_CAVEATS,
+        ...(mediaId
+          ? {}
+          : {
+              account_views: {
+                last_7_days: { views: stats.totals?.views7d.value ?? null, days_with_data: stats.totals?.views7d.daysWithData ?? 0 },
+                last_30_days: { views: stats.totals?.views30d.value ?? null, days_with_data: stats.totals?.views30d.daysWithData ?? 0 },
+              },
+              account_days: stats.days.slice(-Math.min(days, 90)).map((d) => ({
+                day: d.day,
+                views: d.views,
+                reach: d.reach,
+                ...(d.metrics.accounts_engaged != null ? { accounts_engaged: d.metrics.accounts_engaged } : {}),
+                ...(d.metrics.total_interactions != null ? { total_interactions: d.metrics.total_interactions } : {}),
+              })),
+            }),
+        media_total: stats.mediaTotal,
+        ...(stats.mediaTotal > stats.media.length ? { truncated: true } : {}),
+        media: stats.media.map((m) => instagramStatsView(m, fmt)),
+      });
+    }
+  );
+
+  server.registerTool(
+    "refresh_instagram_stats",
+    {
+      title: "Relever les statistiques Instagram maintenant",
+      description:
+        "Lance tout de suite un relevé des statistiques Instagram (sinon automatique toutes les 6 h). Résultat dans 1 à 3 minutes avec get_instagram_stats (premier relevé : jusqu'à plusieurs minutes, tout l'historique du compte). N'écrit rien chez Instagram.",
+      inputSchema: {},
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async () => {
+      const account = await db.socialAccount.findFirst({
+        where: { userId, platform: "INSTAGRAM" },
+        select: { id: true, status: true, grantedScopes: true },
+      });
+      if (!account) return fail("Aucun compte Instagram connecté.");
+      if (account.status !== "ACTIVE") return fail("Le compte Instagram doit être reconnecté (Connexions → Instagram → Reconnecter).");
+      if (insightsScopeStatus(account.grantedScopes) === "missing") return fail(RECONNECT_FOR_STATS_MESSAGE);
+      const queued = await requestInstagramStats(account.id);
+      return ok({
+        queued,
+        note: queued
+          ? "Relevé lancé : consulter get_instagram_stats dans 1 à 3 minutes."
+          : "Un relevé est déjà en attente ou en cours : consulter get_instagram_stats dans quelques minutes.",
+      });
     }
   );
 

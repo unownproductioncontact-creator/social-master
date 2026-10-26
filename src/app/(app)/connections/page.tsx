@@ -2,6 +2,7 @@ import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { SocialAccountCard } from "@/components/connections/social-account-card";
 import { editScopeStatus } from "@/lib/youtube-video-edit";
+import { insightsScopeStatus, type InstagramStatsState } from "@/lib/instagram-stats";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageHeader } from "@/components/layout/page-header";
 import { CheckCircle2, AlertTriangle } from "lucide-react";
@@ -26,6 +27,16 @@ export default async function ConnectionsPage({
   const facebookAccount =
     accounts.filter((a) => a.platform === "FACEBOOK").sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0] ?? null;
 
+  // Statistiques Instagram (§43) : droit à accorder une fois, ou refus constaté au dernier relevé.
+  const instagramStats = (instagramAccount?.metadata as { instagramStats?: InstagramStatsState } | null)?.instagramStats;
+  const instagramNotice = !instagramAccount
+    ? undefined
+    : insightsScopeStatus(instagramAccount.grantedScopes) === "missing"
+      ? "Nouveau : statistiques de vos Reels (vues, portée, partages, taux de zapping). Cliquez sur « Reconnecter » et acceptez l’accès aux statistiques, une seule fois."
+      : instagramStats?.errorKind === "permission"
+        ? "Instagram refuse l’accès aux statistiques. Cliquez sur « Reconnecter » et acceptez l’accès aux statistiques."
+        : undefined;
+
   const feedback = params.instagram ?? params.tiktok ?? params.youtube ?? params.facebook;
   const feedbackIsError = feedback === "error";
 
@@ -48,6 +59,7 @@ export default async function ConnectionsPage({
           platformLabel="Instagram"
           connectUrl="/api/oauth/instagram/start"
           account={instagramAccount}
+          notice={instagramNotice}
         />
         <SocialAccountCard
           platformLabel="TikTok"

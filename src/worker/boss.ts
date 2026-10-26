@@ -11,6 +11,7 @@ export const MEDIA_IMPORT_QUEUE = "media-import";
 export const ORPHAN_SWEEP_QUEUE = "orphan-sweep";
 export const YOUTUBE_THUMBNAIL_QUEUE = "youtube-thumbnail";
 export const YOUTUBE_PUBLICATION_QUEUE = "youtube-publication";
+export const INSTAGRAM_STATS_QUEUE = "instagram-stats";
 
 /**
  * Délai entre deux interrogations de la base, par file (CLAUDE.md §42). Le défaut de pg-boss (2 s pour
@@ -24,6 +25,7 @@ export const POLLING_INTERVAL_SECONDS = {
   [RECONCILE_QUEUE]: 60,
   [YOUTUBE_THUMBNAIL_QUEUE]: 60,
   [YOUTUBE_PUBLICATION_QUEUE]: 60,
+  [INSTAGRAM_STATS_QUEUE]: 60,
   [TOKEN_REFRESH_QUEUE]: 300,
   [STORAGE_CHECK_QUEUE]: 300,
   [MEDIA_CLEANUP_QUEUE]: 300,

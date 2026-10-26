@@ -17,6 +17,8 @@ import { AutoRefresh } from "@/components/util/auto-refresh";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
 import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
+import { getInstagramStatsForTarget } from "@/lib/instagram-stats-service";
+import { InstagramMediaStats } from "@/components/stats/instagram-media-stats";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -72,6 +74,13 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
   const youtubeVideoOnline = post.postTargets.some(
     (t) => t.platform === "YOUTUBE" && t.platformPostId && (t.status === "PUBLISHED" || t.status === "PLATFORM_SCHEDULED")
   );
+  // Statistiques Instagram déjà relevées (§43) : lecture en base, aucun appel à Meta.
+  const publishedInstagram = post.postTargets.find(
+    (t) => t.platform === "INSTAGRAM" && t.contentType !== "STORY" && t.status === "PUBLISHED" && t.platformPostId
+  );
+  const instagramStats = publishedInstagram
+    ? await getInstagramStatsForTarget(publishedInstagram.socialAccountId, publishedInstagram.platformPostId!)
+    : null;
   // Réel d'essai (§34) : rappelé en lecture seule, sinon rien ne le distingue d'un Reel classique.
   const igTrial = trialFromOptions(post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions);
 
@@ -178,6 +187,19 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
               {igTrial === "MANUAL"
                 ? "à partager à vos abonnés depuis l’app Instagram."
                 : "partagé à vos abonnés s’il marche bien."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {publishedInstagram && (
+        <div className="max-w-xl">
+          {instagramStats ? (
+            <InstagramMediaStats stats={instagramStats} timezone={user?.timezone ?? "Europe/Paris"} />
+          ) : (
+            <p className="text-[12.5px] text-muted-foreground">
+              Statistiques Instagram : pas encore relevées (relevé automatique toutes les 6 h, une fois l’accès aux
+              statistiques accepté dans Connexions).
             </p>
           )}
         </div>

@@ -134,6 +134,9 @@ model SocialAccount {
 
   postTargets PostTarget[]
 
+  instagramMedia InstagramMedia[]
+  instagramDays  InstagramAccountDay[]
+
   @@unique([platform, platformAccountId])
   @@index([userId])
   @@map("social_accounts")
@@ -340,4 +343,71 @@ model OAuthToken {
 
   @@index([userId])
   @@map("oauth_tokens")
+}
+
+/// Statistiques Instagram (CLAUDE.md §43) : un média du compte connecté, publié par Social Master ou non
+/// (lien avec un post : PostTarget.platformPostId = mediaId). Dernières valeurs lues ici, historique dans
+/// InstagramMediaSnapshot. Une métrique que l'API ne renvoie pas reste null : jamais 0 par défaut.
+model InstagramMedia {
+  id                String        @id @default(cuid())
+  socialAccountId   String
+  socialAccount     SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  mediaId           String
+  mediaType         String?
+  mediaProductType  String?
+  permalink         String?
+  caption           String?
+  postedAt          DateTime
+  views             Int?
+  reach             Int?
+  likes             Int?
+  comments          Int?
+  shares            Int?
+  saved             Int?
+  totalInteractions Int?
+  // Valeurs brutes de Meta : unité du temps de visionnage et échelle du taux de zapping non documentées
+  // (vérifiées sur un vrai relevé, voir CLAUDE.md §43).
+  avgWatchTime      Float?
+  totalWatchTime    Float?
+  skipRate          Float?
+  missingMetrics    String[]      @default([])
+  statsFetchedAt    DateTime?
+  statsError        String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  snapshots InstagramMediaSnapshot[]
+
+  @@unique([socialAccountId, mediaId])
+  @@index([socialAccountId, postedAt])
+  @@map("instagram_media")
+}
+
+/// Relevé daté des statistiques d'un média : l'API ne donne que le cumul à l'instant T, la courbe dans le
+/// temps (vues à 6 h, 24 h, 7 j…) se reconstruit avec ces relevés. `metrics` = seulement ce qui a été renvoyé.
+model InstagramMediaSnapshot {
+  id               String         @id @default(cuid())
+  instagramMediaId String
+  instagramMedia   InstagramMedia @relation(fields: [instagramMediaId], references: [id], onDelete: Cascade)
+  fetchedAt        DateTime       @default(now())
+  metrics          Json           @default("{}")
+
+  @@index([instagramMediaId, fetchedAt])
+  @@map("instagram_media_snapshots")
+}
+
+/// Statistiques du compte pour une journée (`day` = AAAA-MM-JJ). Relues pendant les jours qui suivent : Meta
+/// annonce jusqu'à 48 h de retard. `metrics` garde tout ce qui a été renvoyé, `views`/`reach` servent à l'affichage.
+model InstagramAccountDay {
+  id              String        @id @default(cuid())
+  socialAccountId String
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  day             String
+  views           Int?
+  reach           Int?
+  metrics         Json          @default("{}")
+  fetchedAt       DateTime      @default(now())
+
+  @@unique([socialAccountId, day])
+  @@map("instagram_account_days")
 }

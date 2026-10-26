@@ -11,7 +11,14 @@ const GRAPH_BASE = "https://graph.instagram.com/v25.0";
 
 // Scopes vérifiés le 07/07/2026 sur developers.facebook.com/docs/instagram-platform
 // (variante "Instagram API with Instagram Login" — aucune Page Facebook requise).
-export const INSTAGRAM_SCOPES = ["instagram_business_basic", "instagram_business_content_publish"];
+export const INSTAGRAM_SCOPES = [
+  "instagram_business_basic",
+  "instagram_business_content_publish",
+  // Lecture des statistiques par média (Reels). Sans ce scope, /{media-id}/insights renvoie une
+  // erreur de permission. Ajouté le 26/10/2026 : un scope ajouté n'est PAS rétroactif sur un
+  // jeton déjà émis -> il faut « Reconnecter » le compte Instagram pour qu'il prenne effet.
+  "instagram_business_manage_insights",
+];
 
 function getRedirectUri(): string {
   return `${appUrl()}/api/oauth/instagram/callback`;
@@ -410,4 +417,74 @@ export async function publishInstagramCarousel(
   const permalink = await fetchMediaPermalink(mediaId, accessToken);
 
   return { platformPostId: mediaId, platformPostUrl: permalink };
+}
+
+// ───────────────────────────── Statistiques (insights), CLAUDE.md §43 ─────────────────────────────
+
+/** Délai max d'un appel de statistiques : un relevé lent ne doit jamais bloquer le job. */
+const STATS_TIMEOUT_MS = 15_000;
+
+/** Champs demandés pour lister les médias ; repli sans les champs que la référence réserve à Facebook Login. */
+export const MEDIA_LIST_FIELDS = "id,media_type,media_product_type,is_shared_to_feed,timestamp,permalink,caption";
+export const MEDIA_LIST_FIELDS_FALLBACK = "id,media_type,is_shared_to_feed,timestamp,permalink";
+
+export type ListedInstagramMedia = {
+  id: string;
+  media_type?: string;
+  media_product_type?: string;
+  is_shared_to_feed?: boolean;
+  timestamp?: string;
+  permalink?: string;
+  caption?: string;
+};
+
+/**
+ * Une page de /{ig-user-id}/media (du plus récent au plus ancien, 10 000 derniers médias au plus, sans les
+ * Stories). `after` = curseur de la page suivante, null à la fin — une page courte ou vide n'est PAS la fin.
+ */
+export async function listInstagramMediaPage(
+  igUserId: string,
+  accessToken: string,
+  opts: { fields: string; after?: string | null; limit?: number }
+): Promise<{ items: ListedInstagramMedia[]; after: string | null }> {
+  const params: Record<string, string> = { fields: opts.fields, limit: String(opts.limit ?? 50) };
+  if (opts.after) params.after = opts.after;
+  const json = (await graphFetch(`/${igUserId}/media`, accessToken, params, "GET", STATS_TIMEOUT_MS)) as {
+    data?: ListedInstagramMedia[];
+    paging?: { next?: string; cursors?: { after?: string } };
+  };
+  const items = (json.data ?? []).filter((m) => typeof m?.id === "string");
+  const after = json.paging?.next ? (json.paging.cursors?.after ?? null) : null;
+  return { items, after };
+}
+
+/** Statistiques cumulées d'un média (period lifetime imposée par Meta). Une métrique refusée = erreur 100. */
+export async function fetchInstagramMediaInsights(
+  mediaId: string,
+  accessToken: string,
+  metrics: readonly string[]
+): Promise<unknown> {
+  return graphFetch(`/${mediaId}/insights`, accessToken, { metric: metrics.join(",") }, "GET", STATS_TIMEOUT_MS);
+}
+
+/** Totaux du compte sur une fenêtre since/until (secondes Unix), period=day, metric_type=total_value. */
+export async function fetchInstagramAccountTotals(
+  igUserId: string,
+  accessToken: string,
+  metrics: readonly string[],
+  window: { since: number; until: number }
+): Promise<unknown> {
+  return graphFetch(
+    `/${igUserId}/insights`,
+    accessToken,
+    {
+      metric: metrics.join(","),
+      period: "day",
+      metric_type: "total_value",
+      since: String(window.since),
+      until: String(window.until),
+    },
+    "GET",
+    STATS_TIMEOUT_MS
+  );
 }

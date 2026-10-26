@@ -7,6 +7,10 @@ import {
   publishInstagramMedia,
   publishInstagramCarousel,
   getContentPublishingLimit,
+  listInstagramMediaPage,
+  fetchInstagramMediaInsights,
+  fetchInstagramAccountTotals,
+  MEDIA_LIST_FIELDS,
 } from "@/lib/providers/instagram";
 
 // Tests du flux de publication Instagram avec `fetch` MOCKÉ (aucun token/réseau réel). Exercent le
@@ -56,7 +60,9 @@ describe("OAuth / profil", () => {
   it("URL d'autorisation : scopes CSV, redirect_uri et state corrects", () => {
     const u = new URL(buildInstagramAuthorizeUrl("state123"));
     expect(u.origin + u.pathname).toBe("https://www.instagram.com/oauth/authorize");
-    expect(u.searchParams.get("scope")).toBe("instagram_business_basic,instagram_business_content_publish");
+    expect(u.searchParams.get("scope")).toBe(
+      "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights"
+    );
     expect(u.searchParams.get("response_type")).toBe("code");
     expect(u.searchParams.get("state")).toBe("state123");
     expect(u.searchParams.get("redirect_uri")).toBe(
@@ -317,5 +323,47 @@ describe("Couverture d'un Reel (cover_url, §37)", () => {
       publishInstagramMedia({ igUserId: "ig", accessToken: "t", caption: "x", mediaType: "REELS", mediaUrl: "https://w/v.mp4" }, 1, 5000)
     ).rejects.toThrow(/\(400\)/);
     expect(calls.filter((c) => c.method === "POST" && c.body?.get("media_type") === "REELS")).toHaveLength(1);
+  });
+});
+
+describe("Statistiques (§43)", () => {
+  it("liste des médias : champs, taille de page, curseur ; fin seulement quand paging.next manque", async () => {
+    mockFetch((url) =>
+      url.includes("after=c1")
+        ? res({ data: [], paging: { cursors: { after: "c2" } } })
+        : res({ data: [{ id: "m1", media_type: "VIDEO" }, { nope: true }], paging: { next: "https://next", cursors: { after: "c1" } } })
+    );
+    const page1 = await listInstagramMediaPage("ig-1", "tok", { fields: MEDIA_LIST_FIELDS });
+    expect(page1).toEqual({ items: [{ id: "m1", media_type: "VIDEO" }], after: "c1" });
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe("/v25.0/ig-1/media");
+    expect(url.searchParams.get("fields")).toBe(MEDIA_LIST_FIELDS);
+    expect(url.searchParams.get("limit")).toBe("50");
+    expect(url.searchParams.get("access_token")).toBe("tok");
+    const page2 = await listInstagramMediaPage("ig-1", "tok", { fields: MEDIA_LIST_FIELDS, after: "c1" });
+    expect(page2).toEqual({ items: [], after: null });
+  });
+
+  it("statistiques d'un média et du compte : paramètres exacts", async () => {
+    mockFetch(() => res({ data: [] }));
+    await fetchInstagramMediaInsights("m1", "tok", ["views", "reach"]);
+    await fetchInstagramAccountTotals("ig-1", "tok", ["views"], { since: 100, until: 200 });
+    const media = new URL(calls[0].url);
+    expect(media.pathname).toBe("/v25.0/m1/insights");
+    expect(media.searchParams.get("metric")).toBe("views,reach");
+    const account = new URL(calls[1].url);
+    expect(account.pathname).toBe("/v25.0/ig-1/insights");
+    expect(Object.fromEntries(account.searchParams)).toMatchObject({
+      metric: "views",
+      period: "day",
+      metric_type: "total_value",
+      since: "100",
+      until: "200",
+    });
+  });
+
+  it("refus de Meta : l'erreur garde le corps JSON (classement par code)", async () => {
+    mockFetch(() => res({ error: { code: 10, message: "permission" } }, false, 400));
+    await expect(fetchInstagramMediaInsights("m1", "tok", ["views"])).rejects.toThrow(/"code":10/);
   });
 });

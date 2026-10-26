@@ -11,6 +11,7 @@ import {
   ORPHAN_SWEEP_QUEUE,
   YOUTUBE_THUMBNAIL_QUEUE,
   YOUTUBE_PUBLICATION_QUEUE,
+  INSTAGRAM_STATS_QUEUE,
   POLLING_INTERVAL_SECONDS,
 } from "@/worker/boss";
 import { handlePublishBatch } from "@/worker/publish-job";
@@ -24,6 +25,8 @@ import { runYouTubeThumbnailRetry } from "@/worker/youtube-thumbnail-job";
 import type { ThumbnailJobData } from "@/lib/youtube-thumbnail-service";
 import { runYouTubePublicationCheck } from "@/worker/youtube-publication-job";
 import type { PublicationJobData } from "@/lib/youtube-scheduled-video";
+import { runInstagramStats, type InstagramStatsJobData } from "@/worker/instagram-stats-job";
+import { requestInstagramStats } from "@/lib/instagram-stats-queue";
 
 let started = false;
 
@@ -68,6 +71,11 @@ export async function startWorker(): Promise<void> {
   // Vérification de la publication des vidéos programmées chez YouTube (CLAUDE.md §38) : chaque job
   // programme lui-même le suivant ; la réconciliation rattrape un job perdu.
   await boss.createQueue(YOUTUBE_PUBLICATION_QUEUE, { retryLimit: 1, retryDelay: 60, expireInSeconds: 300 });
+
+  // Statistiques Instagram (CLAUDE.md §43) : toutes les 6 h + juste après une (re)connexion Instagram.
+  // « stately » + singletonKey = id du compte : au plus un relevé en attente et un en cours PAR COMPTE.
+  await boss.createQueue(INSTAGRAM_STATS_QUEUE, { policy: "stately", retryLimit: 0, expireInSeconds: 1800 });
+  await boss.schedule(INSTAGRAM_STATS_QUEUE, "20 */6 * * *", {}, { tz: "UTC" });
 
   // Chaque file interroge la base à son propre rythme (§42), jamais au défaut de 2 s.
   const every = (queue: keyof typeof POLLING_INTERVAL_SECONDS) => ({
@@ -124,7 +132,16 @@ export async function startWorker(): Promise<void> {
     }
   );
 
+  await boss.work(
+    INSTAGRAM_STATS_QUEUE,
+    { ...every(INSTAGRAM_STATS_QUEUE), batchSize: 1 },
+    async ([job]: Job<InstagramStatsJobData>[]) => {
+      // Cron (sans compte) : un job par compte, dédoublonné par compte ; sinon relevé du compte demandé.
+      await runInstagramStats(job.data ?? {}, new Date(), requestInstagramStats);
+    }
+  );
+
   console.log(
-    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import, youtube-thumbnail, youtube-publication)"
+    "[worker] pg-boss démarré (queues: publish, reconcile, token-refresh, storage-check, media-cleanup, orphan-sweep, media-import, youtube-thumbnail, youtube-publication, instagram-stats)"
   );
 }

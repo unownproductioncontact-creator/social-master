@@ -10,6 +10,7 @@ import {
   Images,
   Link2,
   History,
+  BarChart3,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { href: "/library", label: "Médiathèque", icon: Images },
   { href: "/connections", label: "Connexions", icon: Link2 },
   { href: "/history", label: "Historique", icon: History },
+  { href: "/stats", label: "Statistiques", icon: BarChart3 },
   { href: "/settings", label: "Paramètres", icon: Settings },
 ];
 

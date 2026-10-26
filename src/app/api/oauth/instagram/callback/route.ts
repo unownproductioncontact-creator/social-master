@@ -10,6 +10,8 @@ import {
   mapInstagramAccountType,
 } from "@/lib/providers/instagram";
 import { appUrl } from "@/lib/app-url";
+import { insightsScopeStatus } from "@/lib/instagram-stats";
+import { requestInstagramStats } from "@/lib/instagram-stats-queue";
 
 function redirectToConnections(req: NextRequest, status: "connected" | "error", detail?: string) {
   // req.nextUrl.origin reflète l'hôte interne vu par Next.js (ex. localhost:10000 sur Render,
@@ -52,7 +54,7 @@ export async function GET(req: NextRequest) {
       return redirectToConnections(req, "error", "Ce compte Instagram est déjà connecté à un autre utilisateur.");
     }
 
-    await db.socialAccount.upsert({
+    const account = await db.socialAccount.upsert({
       where: { platform_platformAccountId: { platform: "INSTAGRAM", platformAccountId: profile.user_id } },
       create: {
         userId: session.userId,
@@ -90,6 +92,11 @@ export async function GET(req: NextRequest) {
         detail: { username: profile.username },
       },
     });
+
+    // Statistiques autorisées : premier relevé tout de suite plutôt qu'au prochain passage (6 h) — §43.
+    if (insightsScopeStatus(account.grantedScopes) !== "missing") {
+      await requestInstagramStats(account.id);
+    }
 
     return redirectToConnections(req, "connected");
   } catch (err) {
