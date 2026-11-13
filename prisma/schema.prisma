@@ -119,6 +119,9 @@ model SocialAccount {
   platformAccountId String
   username          String
   displayName       String?
+  // Nom donné par l'utilisateur quand il a plusieurs comptes sur un réseau (« Principal », « Clips »,
+  // CLAUDE.md §44). null = pas nommé : on affiche @username. Le compte principal d'un réseau = le plus ancien.
+  label             String?
   avatarUrl         String?
   accountType       SocialAccountType?
   accessTokenEnc    String

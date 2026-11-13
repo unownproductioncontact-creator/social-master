@@ -9,6 +9,8 @@ type ConnectionAccount = {
   platform: string;
   username: string;
   status: string;
+  /** Nom donné au compte (§44), affiché avant le pseudo. */
+  label?: string | null;
 };
 
 /** Les plateformes gérées, dans l'ordre d'affichage. */
@@ -28,8 +30,11 @@ export function ConnectionsCard({ accounts }: { accounts: ConnectionAccount[] })
         Connexions
       </h3>
       <div className="flex flex-col">
-        {PLATFORMS.map((platform) => {
-          const account = accounts.find((a) => a.platform === platform);
+        {PLATFORMS.flatMap((platform) => {
+          // Plusieurs comptes possibles par réseau (§44) : une ligne par compte, ou une ligne « Connecter ».
+          const list = accounts.filter((a) => a.platform === platform);
+          return (list.length > 0 ? list : [undefined]).map((account) => ({ platform, account }));
+        }).map(({ platform, account }) => {
           const needsAction = account != null && account.status !== "ACTIVE";
           const rowClassName =
             "flex items-center justify-between gap-3 border-b border-border px-[15px] py-[11px] last:border-b-0";
@@ -39,7 +44,7 @@ export function ConnectionsCard({ accounts }: { accounts: ConnectionAccount[] })
               <PlatformChip platform={platform} />
               {account ? (
                 <span className="truncate text-[12.5px] text-secondary-foreground">
-                  @{account.username}
+                  {account.label && <span className="font-semibold">{account.label} </span>}@{account.username}
                 </span>
               ) : (
                 <Link
@@ -67,7 +72,7 @@ export function ConnectionsCard({ accounts }: { accounts: ConnectionAccount[] })
           if (needsAction) {
             return (
               <Link
-                key={platform}
+                key={account?.id ?? platform}
                 href="/connections"
                 className={cn(rowClassName, "transition-colors hover:bg-muted/50")}
               >
@@ -78,7 +83,7 @@ export function ConnectionsCard({ accounts }: { accounts: ConnectionAccount[] })
           }
 
           return (
-            <div key={platform} className={rowClassName}>
+            <div key={account?.id ?? platform} className={rowClassName}>
               {left}
               {right}
             </div>

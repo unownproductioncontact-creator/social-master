@@ -22,6 +22,8 @@ type TargetStatus = {
   platformPostUrl: string | null;
   /** Horaire effectif propre à cette cible (peut différer de Post.scheduledAt, ex. IG à H+5min). */
   scheduledAt: Date | null;
+  /** Nom donné au compte de la cible (§44), affiché à côté de la plateforme. */
+  accountLabel?: string | null;
 };
 
 /** Format `datetime-local` (valeur d'un <input type="datetime-local">), partagé par tous les champs de ce panneau. */
@@ -81,7 +83,11 @@ function TargetRow({
   const effective = target.scheduledAt ?? fallbackScheduledAt;
   return (
     <div className="flex items-center justify-between gap-2 text-[13.5px]">
-      <PlatformChip platform={target.platform} time={effective ? formatInTimeZone(effective, timezone, "HH:mm") : undefined} />
+      <PlatformChip
+        platform={target.platform}
+        account={target.accountLabel}
+        time={effective ? formatInTimeZone(effective, timezone, "HH:mm") : undefined}
+      />
       <div className="flex items-center gap-2">
         <StatusBadge tone={postStatusTone(target.status)}>{postStatusLabel(target.status)}</StatusBadge>
         {target.platformPostUrl && (

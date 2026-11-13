@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
 import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
+import { accountChoicesFrom, type AccountPlatform } from "@/lib/social-accounts";
 
 /**
  * Reconstitue un nom lisible depuis la clé de stockage `media/{userId}/{uuid}-{nom_de_fichier}`
@@ -100,6 +101,10 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         tiktokDraftTiming: tiktokDraftTimingFromOptions(source.postTargets.find((t) => t.platform === "TIKTOK")?.platformOptions),
         targetYoutube: source.postTargets.some((t) => t.platform === "YOUTUBE"),
         targetFacebook: source.postTargets.some((t) => t.platform === "FACEBOOK"),
+        // Même compte que le post dupliqué sur chaque réseau (§44).
+        accountIds: Object.fromEntries(
+          source.postTargets.map((t) => [t.platform as AccountPlatform, t.socialAccountId])
+        ) as Partial<Record<AccountPlatform, string>>,
         youtubeTitle: (ytTarget?.platformOptions as { title?: string } | null)?.title ?? undefined,
         instagramCoverTimeMs:
           (igTarget?.platformOptions as { coverTimeMs?: number } | null)?.coverTimeMs ?? null,
@@ -133,6 +138,7 @@ export default async function ComposerPage(props: PageProps<"/composer">) {
         tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
         youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
         facebookConnected={accounts.some((a) => a.platform === "FACEBOOK")}
+        accountChoices={accountChoicesFrom(accounts)}
         timezone={timezone}
         initialPost={initialPost}
         initialScheduleLocal={defaultScheduleLocal(timezone, dateParam)}

@@ -98,7 +98,7 @@ export async function GET(req: NextRequest) {
       await requestInstagramStats(account.id);
     }
 
-    return redirectToConnections(req, "connected");
+    return redirectToConnections(req, "connected", `Compte Instagram @${profile.username} connecté.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erreur inconnue";
     await db.activityLog.create({

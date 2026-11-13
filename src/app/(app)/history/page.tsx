@@ -82,6 +82,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
   const targets = await db.postTarget.findMany({
     where,
     include: {
+      socialAccount: { select: { label: true } },
       post: {
         include: {
           postMedia: {
@@ -194,6 +195,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <PlatformChip
                           platform={target.platform}
+                          account={target.socialAccount.label}
                           time={effectiveAt ? formatInTimeZone(effectiveAt, timezone, "dd/MM HH:mm") : undefined}
                         />
                         <span className="text-[11px] text-muted-foreground">

@@ -17,6 +17,7 @@ import { AutoRefresh } from "@/components/util/auto-refresh";
 import { collaboratorsFromOptions } from "@/lib/instagram-collaborators";
 import { trialFromOptions } from "@/lib/instagram-trial";
 import { tiktokDraftTimingFromOptions } from "@/lib/tiktok-options";
+import { accountChoicesFrom, type AccountPlatform } from "@/lib/social-accounts";
 import { getInstagramStatsForTarget } from "@/lib/instagram-stats-service";
 import { InstagramMediaStats } from "@/components/stats/instagram-media-stats";
 
@@ -37,7 +38,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
   const [post, mediaAssets, accounts, user] = await Promise.all([
     db.post.findUnique({
       where: { id: postId },
-      include: { postMedia: true, postTargets: true },
+      include: { postMedia: true, postTargets: { include: { socialAccount: { select: { label: true } } } } },
     }),
     db.mediaAsset.findMany({ where: { userId: session.userId, status: "READY" }, orderBy: { createdAt: "desc" } }),
     db.socialAccount.findMany({ where: { userId: session.userId } }),
@@ -145,6 +146,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
           tiktokConnected={accounts.some((a) => a.platform === "TIKTOK")}
           youtubeConnected={accounts.some((a) => a.platform === "YOUTUBE")}
           facebookConnected={accounts.some((a) => a.platform === "FACEBOOK")}
+          accountChoices={accountChoicesFrom(accounts)}
           timezone={user?.timezone ?? "Europe/Paris"}
           servedPlatforms={servedPlatforms}
           initialPost={{
@@ -173,6 +175,10 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
               post.postTargets.find((t) => t.platform === "INSTAGRAM")?.platformOptions
             ),
             instagramTrial: igTrial,
+            // Compte de chaque cible (§44).
+            accountIds: Object.fromEntries(
+              post.postTargets.map((t) => [t.platform as AccountPlatform, t.socialAccountId])
+            ) as Partial<Record<AccountPlatform, string>>,
           }}
         />
       ) : (
@@ -224,6 +230,7 @@ export default async function EditPostPage(props: PageProps<"/composer/[postId]"
             errorMessage: t.errorMessage,
             platformPostUrl: t.platformPostUrl,
             scheduledAt: t.scheduledAt,
+            accountLabel: t.socialAccount.label,
           }))}
           canSchedule={Boolean(post.postMedia.length > 0 && post.postTargets.length > 0)}
         />

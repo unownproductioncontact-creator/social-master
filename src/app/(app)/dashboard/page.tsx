@@ -75,7 +75,7 @@ export default async function DashboardPage() {
     postMedia: {
       include: { mediaAsset: { select: { storageKey: true, mimeType: true, thumbnailKey: true } } },
     },
-    postTargets: true,
+    postTargets: { include: { socialAccount: { select: { label: true } } } },
   } as const;
 
   // Requêtes SÉQUENTIELLES : le moteur `prisma dev` local ferme la connexion (P1017) sous
@@ -137,7 +137,7 @@ export default async function DashboardPage() {
   });
   const accounts = await db.socialAccount.findMany({
     where: { userId: session.userId },
-    select: { id: true, platform: true, username: true, status: true },
+    select: { id: true, platform: true, username: true, status: true, label: true },
     orderBy: { createdAt: "asc" },
   });
 
@@ -166,6 +166,7 @@ export default async function DashboardPage() {
       id: t.id,
       platform: t.platform,
       scheduledAt: t.scheduledAt ?? post.scheduledAt,
+      accountLabel: t.socialAccount.label,
     })),
   }));
 

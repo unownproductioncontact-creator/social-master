@@ -62,19 +62,27 @@ export async function getBulkQuotaInfo(): Promise<BulkQuotaInfo> {
 
   // Capacité TikTok : scope « tous les comptes TikTok de l'utilisateur » (aligné sur le pré-check du
   // scheduler en masse). additionalDrafts = 0 → on veut juste l'état actuel, pas une réservation.
-  const capacity = await checkTikTokDraftCapacity({ userId: session.userId }, 0);
+  // Plafond TikTok PAR compte : celui de la publication en masse, le principal (§44).
+  const tiktokAccount = await db.socialAccount.findFirst({
+    where: { userId: session.userId, platform: "TIKTOK" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+  });
+  const tiktokScope = tiktokAccount ? { socialAccountId: tiktokAccount.id } : { userId: session.userId };
+  const capacity = await checkTikTokDraftCapacity(tiktokScope, 0);
 
   // Horaires bruts sur une fenêtre large : le client s'en sert pour mesurer LUI-MÊME la fenêtre
   // glissante de 24 h la plus chargée en y ajoutant les horaires des cartes en attente (P1-4).
   const now = Date.now();
   const tiktokEventTimesMs = await getTikTokDraftEventTimes(
-    { userId: session.userId },
+    tiktokScope,
     new Date(now - TIKTOK_EVENT_TIMES_PAST_MS),
     new Date(now + TIKTOK_EVENT_TIMES_FUTURE_MS)
   );
 
   const igAccount = await db.socialAccount.findFirst({
     where: { userId: session.userId, platform: "INSTAGRAM" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }], // compte principal (§44), celui de la publication en masse
     select: { id: true },
   });
 

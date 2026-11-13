@@ -36,6 +36,7 @@ import {
 } from "@/lib/instagram-collaborators";
 import { INSTAGRAM_TRIAL_COLLABORATORS_ERROR, type InstagramTrialStrategy } from "@/lib/instagram-trial";
 import { TIKTOK_DRAFT_TIMING_LABELS, TIKTOK_DRAFT_TIMINGS, type TikTokDraftTiming } from "@/lib/tiktok-options";
+import type { AccountChoices, AccountPlatform } from "@/lib/social-accounts";
 import { isInQuietWindow, suggestWakeTime, QUIET_WINDOW_LABEL } from "@/lib/schedule-window";
 import { getLastUsed, rememberHashtags, rememberScheduleHour, truncatePreview } from "@/lib/last-used";
 
@@ -99,6 +100,7 @@ export function PostComposerForm({
   initialPost,
   initialScheduleLocal,
   servedPlatforms,
+  accountChoices = {},
 }: {
   mediaOptions: MediaOption[];
   instagramConnected: boolean;
@@ -133,11 +135,15 @@ export function PostComposerForm({
     instagramCollaborators?: string[];
     /** Réel d'essai (PostTarget.platformOptions.trial) — null/absent = Reel classique. */
     instagramTrial?: InstagramTrialStrategy | null;
+    /** Compte de chaque cible (§44) — absent = le compte principal du réseau. */
+    accountIds?: Partial<Record<AccountPlatform, string>>;
   };
   /** Valeur par défaut du champ de programmation (datetime-local, heure locale). Nouveau post seulement. */
   initialScheduleLocal?: string;
   /** Plateformes déjà servies (cible PUBLISHED/SENT_TO_INBOX) : case cochée-verrouillée, jamais republiée. */
   servedPlatforms?: ServedPlatform[];
+  /** Comptes connectés par réseau, le principal d'abord (§44) : un menu « Compte » apparaît dès qu'il y en a 2. */
+  accountChoices?: AccountChoices;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -166,6 +172,43 @@ export function PostComposerForm({
     (initialPost?.instagramCollaborators ?? []).map((u) => `@${u}`).join(", ")
   );
   const [trialChoice, setTrialChoice] = useState<string>(initialPost?.instagramTrial ?? "OFF");
+  // Compte choisi par réseau (§44) : celui du brouillon, sinon le principal (1er de la liste).
+  const [accountIds, setAccountIds] = useState<Partial<Record<AccountPlatform, string>>>(initialPost?.accountIds ?? {});
+  const chosenAccount = (platform: AccountPlatform): string | undefined => {
+    const choices = accountChoices[platform] ?? [];
+    const wanted = accountIds[platform];
+    return choices.some((c) => c.id === wanted) ? wanted : choices[0]?.id;
+  };
+  /** Menu « Compte » sous un réseau coché, seulement s'il a plusieurs comptes connectés. */
+  const accountPicker = (platform: AccountPlatform) => {
+    const choices = accountChoices[platform] ?? [];
+    if (choices.length < 2) return null;
+    const id = `account-${platform.toLowerCase()}`;
+    const items = choices.map((c) => ({ value: c.id, label: c.name }));
+    return (
+      <div className="ml-6 flex flex-wrap items-center gap-2">
+        <Label htmlFor={id} className="text-[12.5px] font-normal text-muted-foreground">
+          Compte :
+        </Label>
+        <Select
+          items={items}
+          value={chosenAccount(platform) ?? null}
+          onValueChange={(v) => setAccountIds((prev) => ({ ...prev, [platform]: v as string }))}
+        >
+          <SelectTrigger id={id} size="sm" className="w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {items.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  };
   const [dateTime, setDateTime] = useState(initialScheduleLocal ?? "");
   // Vrai dès que l'utilisateur modifie lui-même le champ de programmation (saisie ou raccourci) — sert
   // à protéger sa saisie contre le pré-remplissage mémoire ci-dessous (voir l'effet de montage).
@@ -312,6 +355,13 @@ export function PostComposerForm({
         instagramCoverTimeMs: igContentType === "REEL" ? coverTimeMs : null,
         instagramCollaborators: igCollaboratorsVisible ? parsedCollaborators : undefined,
         instagramTrial: igTrial,
+        // Compte de chaque réseau coché (§44) : seulement quand il y a un choix à transmettre.
+        accountIds: {
+          INSTAGRAM: igChecked ? chosenAccount("INSTAGRAM") : undefined,
+          TIKTOK: tiktokChecked ? chosenAccount("TIKTOK") : undefined,
+          YOUTUBE: youtubeChecked ? chosenAccount("YOUTUBE") : undefined,
+          FACEBOOK: facebookChecked ? chosenAccount("FACEBOOK") : undefined,
+        },
       });
       if (result.error) {
         toast.error(result.error);
@@ -516,6 +566,7 @@ export function PostComposerForm({
                 Déjà publié sur Instagram — ne sera pas republié.
               </p>
             )}
+            {igChecked && !servedInstagram && accountPicker("INSTAGRAM")}
             {targetInstagram && !servedInstagram && selectedMedia.length === 1 && (
               <div className="ml-6 flex items-center gap-2">
                 <Checkbox
@@ -551,6 +602,7 @@ export function PostComposerForm({
                 )}
               </Label>
             </div>
+            {tiktokChecked && !servedTiktok && accountPicker("TIKTOK")}
             {tiktokChecked && !servedTiktok && (
               <div className="ml-6 flex flex-wrap items-center gap-2">
                 <Label htmlFor="tiktok-draft-timing" className="text-[12.5px] font-normal text-muted-foreground">
@@ -594,6 +646,7 @@ export function PostComposerForm({
                 )}
               </Label>
             </div>
+            {youtubeChecked && !servedYoutube && accountPicker("YOUTUBE")}
             {servedYoutube && (
               <p className="ml-6 text-[11.5px] text-muted-foreground">
                 Déjà publié sur YouTube — ne sera pas republié.
@@ -621,6 +674,7 @@ export function PostComposerForm({
                 )}
               </Label>
             </div>
+            {facebookChecked && !servedFacebook && accountPicker("FACEBOOK")}
             {servedFacebook && (
               <p className="ml-6 text-[11.5px] text-muted-foreground">
                 Déjà publié sur Facebook — ne sera pas republié.

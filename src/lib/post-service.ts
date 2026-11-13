@@ -20,6 +20,7 @@ import {
 } from "@/lib/content-type";
 import { SHORTS_THUMBNAIL_DISABLED_MESSAGE, thumbnailApiAllowed } from "@/lib/youtube-thumbnail";
 import { buildTikTokOptions, TIKTOK_DRAFT_TIMINGS, tiktokDraftTimingFromOptions, type TikTokDraftTiming } from "@/lib/tiktok-options";
+import { resolveAccount, type AccountPlatform } from "@/lib/social-accounts";
 import {
   buildYouTubeOptions,
   YOUTUBE_PRIVACY_STATUSES,
@@ -70,6 +71,19 @@ const SavePostSchema = z.object({
   // Dépôt du brouillon TikTok (§41) : « scheduled » = à l'heure prévue (défaut), « now » = dès la
   // programmation. Mêmes trois états : absent = on garde le choix du brouillon, null = défaut.
   tiktokDraftTiming: z.enum(TIKTOK_DRAFT_TIMINGS).nullish(),
+  // Plusieurs comptes par réseau (§44). Compte de chaque cible, par identifiant (composer) ; trois états
+  // par réseau : absent = garder celui du brouillon (sinon le principal), null = le principal, un id = celui-là.
+  accountIds: z
+    .object({
+      INSTAGRAM: z.string().min(1).nullish(),
+      TIKTOK: z.string().min(1).nullish(),
+      YOUTUBE: z.string().min(1).nullish(),
+      FACEBOOK: z.string().min(1).nullish(),
+    })
+    .partial()
+    .nullish(),
+  // Même choix par NOM pour tous les réseaux cochés (connecteur : « clips », « @pseudo ») ; null = principal.
+  accountRef: z.string().trim().min(1).max(80).nullish(),
 });
 
 export type SavePostInput = z.infer<typeof SavePostSchema>;
@@ -145,26 +159,43 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
     return { error: "Annulez d'abord la programmation avant de modifier ce post." };
   }
 
+  // Miniature YouTube / couverture de Reel (§37) et compte de chaque cible (§44) : ce que le brouillon avait
+  // déjà (cibles non publiées, recréées plus bas) sert quand le champ est absent.
+  const previousTargets = existingPost
+    ? await db.postTarget.findMany({
+        where: { postId: existingPost.id, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
+        select: { platform: true, coverMediaAssetId: true, platformOptions: true, socialAccountId: true },
+      })
+    : [];
+  const previous = (platform: Platform) => previousTargets.find((t) => t.platform === platform);
+
+  // Compte de chaque réseau coché (§44) : plusieurs comptes possibles par réseau, le principal par défaut.
   const accounts = await db.socialAccount.findMany({ where: { userId: userId } });
-  const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM");
-  const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK");
-  const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE");
-  // Page Facebook : la plus récemment connectée si plusieurs (la connexion n'en garde qu'une à la fois).
-  const facebookAccount = accounts
-    .filter((a) => a.platform === "FACEBOOK")
-    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
-  if (data.targetInstagram && !instagramAccount) {
-    return { error: "Connectez d'abord votre compte Instagram." };
+  const pickAccount = (platform: AccountPlatform) => {
+    const resolved = resolveAccount(accounts, platform, {
+      accountId: data.accountIds?.[platform],
+      accountRef: data.accountRef,
+      previousAccountId: previous(platform)?.socialAccountId,
+    });
+    return "error" in resolved ? { error: resolved.error } : { account: resolved.account };
+  };
+  const picks = {
+    INSTAGRAM: data.targetInstagram ? pickAccount("INSTAGRAM") : null,
+    TIKTOK: data.targetTiktok ? pickAccount("TIKTOK") : null,
+    YOUTUBE: data.targetYoutube ? pickAccount("YOUTUBE") : null,
+    FACEBOOK: data.targetFacebook ? pickAccount("FACEBOOK") : null,
+  };
+  for (const pick of Object.values(picks)) {
+    if (pick && "error" in pick) return { error: pick.error };
   }
-  if (data.targetTiktok && !tiktokAccount) {
-    return { error: "Connectez d'abord votre compte TikTok." };
-  }
-  if (data.targetYoutube && !youtubeAccount) {
-    return { error: "Connectez d'abord votre compte YouTube." };
-  }
-  if (data.targetFacebook && !facebookAccount) {
-    return { error: "Connectez d'abord votre Page Facebook." };
-  }
+  const accountOf = (platform: AccountPlatform) => {
+    const pick = picks[platform];
+    return pick && "account" in pick ? pick.account : undefined;
+  };
+  const instagramAccount = accountOf("INSTAGRAM");
+  const tiktokAccount = accountOf("TIKTOK");
+  const youtubeAccount = accountOf("YOUTUBE");
+  const facebookAccount = accountOf("FACEBOOK");
 
   // Collaborateurs Instagram (§28) : uniquement Post/Reel/Carrousel — une Story n'en accepte pas.
   const igCollaborators =
@@ -179,15 +210,6 @@ export async function saveDraftForUser(userId: string, input: SavePostInput): Pr
   if (igTrial && igContentType !== "REEL") return { error: INSTAGRAM_TRIAL_REEL_ONLY_ERROR };
   if (igTrial && igCollaborators.length > 0) return { error: INSTAGRAM_TRIAL_COLLABORATORS_ERROR };
 
-  // Miniature YouTube / couverture de Reel (§37) : ce que le brouillon avait déjà (cibles non publiées,
-  // recréées plus bas) sert quand le champ est absent.
-  const previousTargets = existingPost
-    ? await db.postTarget.findMany({
-        where: { postId: existingPost.id, status: { notIn: ["PUBLISHED", "SENT_TO_INBOX"] } },
-        select: { platform: true, coverMediaAssetId: true, platformOptions: true },
-      })
-    : [];
-  const previous = (platform: Platform) => previousTargets.find((t) => t.platform === platform);
   if (data.youtubeThumbnailMediaId && !data.targetYoutube) {
     return { error: "Une miniature YouTube demande de cocher YouTube." };
   }

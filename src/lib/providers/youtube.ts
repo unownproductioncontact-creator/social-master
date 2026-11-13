@@ -55,7 +55,9 @@ export function buildYouTubeAuthorizeUrl(state: string): string {
   // access_type=offline + prompt=consent : garantit la délivrance d'un refresh_token (sans prompt=consent,
   // un utilisateur ayant déjà consenti ne reçoit PAS de refresh_token — cf. CLAUDE.md §25 et le callback).
   url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
+  // select_account : Google montre toujours le choix du compte / de la chaîne (plusieurs chaînes, §44) ;
+  // consent : refresh_token garanti.
+  url.searchParams.set("prompt", "select_account consent");
   url.searchParams.set("include_granted_scopes", "true");
   url.searchParams.set("state", state);
   return url.toString();

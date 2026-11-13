@@ -1,4 +1,5 @@
 import "server-only";
+import { matchAccountRef } from "@/lib/social-accounts";
 import type { PostTargetStatus, Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { fetchYouTubeVideoDetails, listYouTubeChannelVideos, updateYouTubeVideo } from "@/lib/providers/youtube";
@@ -157,11 +158,15 @@ export async function getYouTubeVideoForUser(userId: string, ref: VideoRef): Pro
 /** Dernières vidéos de la chaîne (3 unités), avec le post Social Master de celles qui en ont un. */
 export async function listYouTubeVideosForUser(
   userId: string,
-  limit: number
+  limit: number,
+  accountRef?: string
 ): Promise<{ error?: string; videos?: Array<YouTubeVideoDetails & { postId?: string }>; channel?: string; editScope?: EditScope }> {
   const accounts = await db.socialAccount.findMany({ where: { userId, platform: "YOUTUBE" }, orderBy: { createdAt: "asc" } });
-  const account = accounts.find((a) => a.status === "ACTIVE") ?? accounts[0];
-  if (!account) return { error: "Aucune chaîne YouTube connectée (page Connexions)." };
+  // Chaîne demandée (plusieurs chaînes possibles, §44), sinon la principale (la plus ancienne).
+  const account = accountRef ? matchAccountRef(accounts, "YOUTUBE", accountRef) : accounts[0];
+  if (!account) {
+    return { error: accountRef ? `Aucune chaîne YouTube « ${accountRef} » (page Connexions).` : "Aucune chaîne YouTube connectée (page Connexions)." };
+  }
   let videos: YouTubeVideoDetails[];
   try {
     videos = await listYouTubeChannelVideos(await freshYouTubeAccessToken(account), limit);

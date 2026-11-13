@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Statistiques Instagram (CLAUDE.md §43) : lecture de ce que le relevé (toutes les 6 h) a déjà enregistré.
- * Contrat d'URL : `/stats?sort=recent|views&days=30|90|365`.
+ * Contrat d'URL : `/stats?account=<id>&sort=recent|views&days=30|90|365` (account = un autre compte Instagram, §44).
  */
 
 const PERIODS = [30, 90, 365] as const;
@@ -26,8 +26,9 @@ function parseDays(raw: string | undefined): number {
   return (PERIODS as readonly number[]).includes(n) ? n : 30;
 }
 
-function statsHref(sort: "recent" | "views", days: number) {
+function statsHref(sort: "recent" | "views", days: number, accountId?: string) {
   const params = new URLSearchParams();
+  if (accountId) params.set("account", accountId);
   if (sort !== "recent") params.set("sort", sort);
   if (days !== 30) params.set("days", String(days));
   const qs = params.toString();
@@ -43,8 +44,9 @@ export default async function StatsPage(props: PageProps<"/stats">) {
   const rawDays = Array.isArray(searchParams.days) ? searchParams.days[0] : searchParams.days;
   const sort = rawSort === "views" ? "views" : "recent";
   const days = parseDays(rawDays);
+  const rawAccount = Array.isArray(searchParams.account) ? searchParams.account[0] : searchParams.account;
 
-  const stats = await getInstagramStatsForUser(session.userId, { days, limit: 100, sort });
+  const stats = await getInstagramStatsForUser(session.userId, { days, limit: 100, sort, accountId: rawAccount });
 
   if (!stats.account) {
     return (
@@ -65,6 +67,8 @@ export default async function StatsPage(props: PageProps<"/stats">) {
   }
 
   const state = stats.account.state;
+  // Autre compte Instagram que le principal (§44) : gardé dans les liens de tri et de période.
+  const accountParam = stats.accounts.length > 1 && stats.account.id !== stats.accounts[0]?.id ? stats.account.id : undefined;
   const recentDays = stats.days.slice(-14).reverse();
 
   return (
@@ -73,11 +77,25 @@ export default async function StatsPage(props: PageProps<"/stats">) {
         title="Statistiques"
         description={
           <>
-            Instagram @{stats.account.username} — relevé automatique toutes les 6 h
+            Instagram {stats.account.name} — relevé automatique toutes les 6 h
             {state ? ` (dernier : ${formatInTimeZone(new Date(state.lastRunAt), timezone, "dd/MM 'à' HH:mm")})` : ""}.
           </>
         }
       />
+
+      {stats.accounts.length > 1 && (
+        <div className="flex flex-wrap gap-1.5 text-[12px]">
+          {stats.accounts.map((a, index) => (
+            <Link
+              key={a.id}
+              href={statsHref(sort, days, index === 0 ? undefined : a.id)}
+              className={cn(buttonVariants({ variant: a.id === stats.account.id ? "secondary" : "ghost", size: "xs" }))}
+            >
+              {a.name}
+            </Link>
+          ))}
+        </div>
+      )}
 
       {stats.account.scope === "missing" && (
         <Alert>
@@ -141,7 +159,7 @@ export default async function StatsPage(props: PageProps<"/stats">) {
             {(["recent", "views"] as const).map((s) => (
               <Link
                 key={s}
-                href={statsHref(s, days)}
+                href={statsHref(s, days, accountParam)}
                 className={cn(buttonVariants({ variant: sort === s ? "secondary" : "ghost", size: "xs" }))}
               >
                 {s === "recent" ? "Plus récents" : "Plus vus"}
@@ -151,7 +169,7 @@ export default async function StatsPage(props: PageProps<"/stats">) {
             {PERIODS.map((d) => (
               <Link
                 key={d}
-                href={statsHref(sort, d)}
+                href={statsHref(sort, d, accountParam)}
                 className={cn(buttonVariants({ variant: days === d ? "secondary" : "ghost", size: "xs" }))}
               >
                 {d === 365 ? "1 an" : `${d} j`}

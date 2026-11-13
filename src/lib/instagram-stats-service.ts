@@ -9,6 +9,7 @@ import {
   shiftDay,
   type InstagramStatsState,
 } from "@/lib/instagram-stats";
+import { accountDisplayName, accountsOf, matchAccountRef } from "@/lib/social-accounts";
 
 /**
  * Lecture des statistiques Instagram déjà relevées (CLAUDE.md §43) — aucun appel à Meta ici : le
@@ -103,15 +104,38 @@ function sumViews(days: Array<{ day: string; views: number | null }>, from: stri
 
 export async function getInstagramStatsForUser(
   userId: string,
-  opts: { days?: number; limit?: number; sort?: "recent" | "views"; history?: boolean; mediaId?: string; now?: Date } = {}
+  opts: {
+    days?: number;
+    limit?: number;
+    sort?: "recent" | "views";
+    history?: boolean;
+    mediaId?: string;
+    /** Compte choisi par la page (identifiant ; inconnu = le principal). */
+    accountId?: string;
+    /** Compte désigné par le connecteur (nom donné ou @pseudo ; inconnu = erreur). */
+    accountRef?: string;
+    now?: Date;
+  } = {}
 ) {
   const now = opts.now ?? new Date();
   const days = opts.days ?? 30;
-  const account = await db.socialAccount.findFirst({
+  // Plusieurs comptes Instagram possibles (§44) : le principal (le plus ancien) par défaut.
+  const igAccounts = await db.socialAccount.findMany({
     where: { userId, platform: "INSTAGRAM" },
-    select: { id: true, username: true, status: true, grantedScopes: true, metadata: true },
+    select: { id: true, platform: true, username: true, label: true, createdAt: true, status: true, grantedScopes: true, metadata: true },
   });
-  if (!account) return { account: null, media: [], mediaTotal: 0, days: [], totals: null };
+  const accountList = accountsOf(igAccounts, "INSTAGRAM");
+  let account = accountList.find((a) => a.id === opts.accountId) ?? accountList[0];
+  if (opts.accountRef) {
+    const matched = matchAccountRef(igAccounts, "INSTAGRAM", opts.accountRef);
+    if (!matched) {
+      const error = `Aucun compte Instagram « ${opts.accountRef} ». Comptes connectés : ${accountList.map((a) => accountDisplayName(a)).join(", ")}.`;
+      return { error, account: null, accounts: [], media: [], mediaTotal: 0, days: [], totals: null };
+    }
+    account = matched;
+  }
+  const accounts = accountList.map((a) => ({ id: a.id, name: accountDisplayName(a) }));
+  if (!account) return { error: undefined, account: null, accounts, media: [], mediaTotal: 0, days: [], totals: null };
 
   const state = ((account.metadata as { instagramStats?: InstagramStatsState } | null)?.instagramStats ?? null) as InstagramStatsState | null;
   const scope = insightsScopeStatus(account.grantedScopes);
@@ -142,8 +166,11 @@ export async function getInstagramStatsForUser(
   const yesterday = shiftDay(today, -1);
 
   return {
+    error: undefined,
+    accounts,
     account: {
       id: account.id,
+      name: accountDisplayName(account),
       username: account.username,
       status: account.status,
       scope,

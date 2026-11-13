@@ -36,7 +36,7 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
       scheduledAt: { gte: addDays(rangeStart, -1), lte: addDays(rangeEnd, 1) },
       status: { not: "DRAFT" },
     },
-    include: { postTargets: true },
+    include: { postTargets: { include: { socialAccount: { select: { label: true } } } } },
     orderBy: { scheduledAt: "asc" },
   });
 
@@ -51,6 +51,7 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
         id: t.id,
         platform: t.platform,
         scheduledAt: t.scheduledAt ?? p.scheduledAt!,
+        accountLabel: t.socialAccount.label,
       })),
     }));
 

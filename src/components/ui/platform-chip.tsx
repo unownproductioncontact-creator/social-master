@@ -21,10 +21,13 @@ export function platformLabel(platform: string): string {
 export function PlatformChip({
   platform,
   time,
+  account,
   className,
 }: {
   platform: "TIKTOK" | "INSTAGRAM" | string;
   time?: ReactNode;
+  /** Nom du compte quand l'utilisateur en a nommé un (§44) : « YouTube Clips · 18:00 ». */
+  account?: string | null;
   className?: string;
 }) {
   return (
@@ -35,6 +38,7 @@ export function PlatformChip({
       )}
     >
       <span>{platformLabel(platform)}</span>
+      {account && <span className="font-normal">{account}</span>}
       {time != null && time !== "" && (
         <>
           <span aria-hidden="true" className="text-muted-foreground">

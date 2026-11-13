@@ -14,6 +14,8 @@ type UpcomingTarget = {
   platform: string;
   /** Horaire effectif UTC (PostTarget.scheduledAt ?? Post.scheduledAt) ; null pour un brouillon. */
   scheduledAt: Date | null;
+  /** Nom donné au compte de la cible (§44). */
+  accountLabel?: string | null;
 };
 
 export type UpcomingPost = {
@@ -57,7 +59,7 @@ function MediaThumb({ thumbnailKey }: { thumbnailKey: string | null }) {
  */
 function targetChip(target: UpcomingTarget, now: Date, timezone: string) {
   if (!target.scheduledAt) {
-    return <PlatformChip key={target.id} platform={target.platform} />;
+    return <PlatformChip key={target.id} platform={target.platform} account={target.accountLabel} />;
   }
   // « hier, HH:mm » si la publication a eu lieu la veille (jour calendaire du user), sinon HH:mm.
   const dayKey = (d: Date) => formatInTimeZone(d, timezone, "yyyy-MM-dd");
@@ -65,7 +67,7 @@ function targetChip(target: UpcomingTarget, now: Date, timezone: string) {
   const time = formatInTimeZone(target.scheduledAt, timezone, "HH:mm");
   const label =
     dayKey(target.scheduledAt) === dayKey(yesterday) ? `hier, ${time}` : time;
-  return <PlatformChip key={target.id} platform={target.platform} time={label} />;
+  return <PlatformChip key={target.id} platform={target.platform} account={target.accountLabel} time={label} />;
 }
 
 /**

@@ -49,12 +49,23 @@ export default async function BulkComposerPage() {
     isVideo: m.mimeType.startsWith("video/"),
   }));
 
+  // Plusieurs comptes sur un même réseau (§44) : la publication en masse ne vise que les principaux.
+  const hasSeveralAccounts = ["INSTAGRAM", "TIKTOK", "YOUTUBE"].some(
+    (platform) => accounts.filter((a) => a.platform === platform).length > 1
+  );
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Publication en masse"
         description="Importez plusieurs vidéos, réglez légende, hashtags, horaires et plateformes pour tout le lot, puis programmez d'un coup."
       />
+      {hasSeveralAccounts && (
+        <p className="text-[12.5px] text-muted-foreground">
+          La publication en masse utilise vos comptes principaux. Pour une autre chaîne (ex. vos clips), créez les
+          posts un par un ou demandez à Claude.
+        </p>
+      )}
 
       <BulkComposer
         libraryMedia={libraryMedia}

@@ -95,7 +95,8 @@ describe("OAuth / chaîne", () => {
       "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl"
     );
     expect(u.searchParams.get("access_type")).toBe("offline");
-    expect(u.searchParams.get("prompt")).toBe("consent");
+    // select_account : choix du compte / de la chaîne à chaque connexion (plusieurs chaînes, §44).
+    expect(u.searchParams.get("prompt")).toBe("select_account consent");
     expect(u.searchParams.get("include_granted_scopes")).toBe("true");
     expect(u.searchParams.get("state")).toBe("stateXYZ");
     expect(u.searchParams.get("redirect_uri")).toBe(

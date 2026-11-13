@@ -22,6 +22,8 @@ type CalendarTarget = {
   id: string;
   platform: string;
   scheduledAt: Date;
+  /** Nom donné au compte de la cible (§44). */
+  accountLabel?: string | null;
 };
 
 type CalendarPost = {
@@ -171,6 +173,7 @@ export function MonthGrid({
                               <PlatformChip
                                 key={target.id}
                                 platform={target.platform}
+                                account={target.accountLabel}
                                 time={formatInTimeZone(target.scheduledAt, timezone, "HH:mm")}
                               />
                             ))}
@@ -247,6 +250,7 @@ export function MonthGrid({
                         {singleTarget ? (
                           <PlatformChip
                             platform={singleTarget.platform}
+                            account={singleTarget.accountLabel}
                             time={formatInTimeZone(singleTarget.scheduledAt, timezone, "HH:mm")}
                             className={cn(
                               "w-full justify-start truncate",

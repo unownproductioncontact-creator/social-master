@@ -42,6 +42,7 @@ import {
 } from "@/lib/instagram-stats-service";
 import { requestInstagramStats } from "@/lib/instagram-stats-queue";
 import { insightsScopeStatus, RECONNECT_FOR_STATS_MESSAGE, STATS_CAVEATS } from "@/lib/instagram-stats";
+import { accountDisplayName, accountsOf, matchAccountRef, platformName } from "@/lib/social-accounts";
 
 /**
  * Serveur MCP du connecteur Claude (CLAUDE.md §29) — un serveur par requête (transport sans état),
@@ -60,6 +61,7 @@ function instructions(app: string): string {
 - Médias : utiliser ceux de la médiathèque (list_media). Pour un NOUVEAU média, demander à l'utilisateur un lien de partage PUBLIC (Google Drive « Tous les utilisateurs disposant du lien », Dropbox, ou lien direct https) puis appeler import_media_from_url, et suivre l'import avec get_media (quelques secondes à quelques minutes). Une pièce jointe de la conversation ne peut PAS être transmise. Alternative : import manuel sur ${app}/library.
 - Miniature d'un Short YouTube : ${shortsThumbnailApiEnabled() ? "une IMAGE de la médiathèque (youtube_thumbnail_media_id dans save_draft), posée par Social Master dès que YouTube a traité la vidéo ; set_youtube_thumbnail pose ou remplace celle d'une vidéo déjà publiée ; état dans get_post (youtube_thumbnail), jamais bloquant pour la vidéo." : "DÉSACTIVÉE — YouTube n'affiche pas (ni sur la chaîne, ni dans la recherche) une miniature de Short envoyée par l'API (vérifié les 13-14/10/2026) ; elle s'ajoute dans YouTube Studio sur ordinateur (Contenus → Shorts → le Short → Miniature → Importer). Ne pas proposer youtube_thumbnail_media_id ni set_youtube_thumbnail pour un Short."} Couverture d'un Reel Instagram : instagram_cover_media_id (image) ou instagram_thumb_offset_ms (image de la vidéo).
 - Vidéos déjà sur YouTube (publiées par Social Master ou non, chaîne connectée uniquement) : list_youtube_videos pour les retrouver, get_youtube_video pour lire titre/description/tags actuels, update_youtube_video pour changer titre, description, tags, visibilité ou date de publication d'une vidéo programmée. Le fichier vidéo lui-même ne peut pas être remplacé (YouTube ne le permet pas).
+- Plusieurs comptes par réseau possibles (ex. chaîne principale + chaîne de clips) : get_overview les liste avec leur nom (account). save_draft.account choisit le compte de chaque plateforme cochée (nom donné, ex. « Clips », ou @pseudo) ; absent = celui déjà choisi sur le brouillon, sinon le compte principal (le plus ancien). Toujours dire sur QUEL compte un post partira quand l'utilisateur en a plusieurs.
 - Statistiques Instagram (vues, portée, likes, commentaires, partages, enregistrements, temps de visionnage, taux de zapping des 3 premières secondes ; vues du compte jour par jour) : get_instagram_stats. Relevées automatiquement toutes les 6 h, pas en direct ; refresh_instagram_stats lance un relevé tout de suite. Vues = lectures organiques sur Instagram seulement (souvent moins que le chiffre de l'app) ; Meta annonce jusqu'à 48 h de retard.
 - Avant toute action qui publie, programme ou modifie une vidéo en ligne, résume à l'utilisateur ce qui va changer (plateformes, heure, légende, visibilité YouTube, miniature, réel d'essai éventuel ; pour une modification : avant → après) et attends sa confirmation.`;
 }
@@ -197,12 +199,15 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       // Une seule connexion (transaction groupée, lectures séquentielles) plutôt que 7 en parallèle :
       // ménage le petit pool Postgres (Supabase free / moteur local) — CLAUDE.md §29.
       const [accounts, upcoming, scheduled72h, published30d, failedTargets, tiktokToFinalize, drafts] = await db.$transaction([
-        db.socialAccount.findMany({ where: { userId }, select: { platform: true, username: true, status: true, tokenExpiresAt: true } }),
+        db.socialAccount.findMany({
+          where: { userId },
+          select: { id: true, platform: true, username: true, label: true, createdAt: true, status: true, tokenExpiresAt: true },
+        }),
         db.post.findMany({
           where: { userId, status: "SCHEDULED", scheduledAt: { gte: now } },
           orderBy: { scheduledAt: "asc" },
           take: 5,
-          include: { postTargets: { select: { platform: true } } },
+          include: { postTargets: { select: { platform: true, socialAccount: { select: { platform: true, username: true, label: true } } } } },
         }),
         db.post.count({ where: { userId, status: "SCHEDULED", scheduledAt: { gte: now, lte: new Date(now.getTime() + 72 * 3600 * 1000) } } }),
         db.postTarget.count({ where: { post: { userId }, status: { in: ["PUBLISHED", "SENT_TO_INBOX"] }, publishedAt: { gte: new Date(now.getTime() - 30 * 24 * 3600 * 1000) } } }),
@@ -216,12 +221,17 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         library_url: `${app}/library`,
         timezone: tz,
         now: fmt(now),
-        accounts: accounts.map((a) => ({
-          platform: a.platform,
-          username: a.username,
-          status: a.status,
-          token_expires_at: a.platform === "INSTAGRAM" ? fmt(a.tokenExpiresAt) : undefined,
-        })),
+        accounts: accounts
+          .slice()
+          .sort((a, b) => a.platform.localeCompare(b.platform) || a.createdAt.getTime() - b.createdAt.getTime())
+          .map((a) => ({
+            platform: a.platform,
+            account: accountDisplayName(a),
+            username: a.username,
+            principal: accountsOf(accounts, a.platform)[0]?.id === a.id,
+            status: a.status,
+            token_expires_at: a.platform === "INSTAGRAM" ? fmt(a.tokenExpiresAt) : undefined,
+          })),
         counts: {
           scheduled_next_72h: scheduled72h,
           published_last_30d: published30d,
@@ -232,7 +242,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         upcoming: upcoming.map((p) => ({
           post_id: p.id,
           scheduled_at: fmt(p.scheduledAt),
-          platforms: p.postTargets.map((t) => t.platform),
+          platforms: p.postTargets.map((t) => `${t.platform} (${accountDisplayName(t.socialAccount)})`),
           caption: p.caption.slice(0, 120),
         })),
       });
@@ -298,7 +308,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         where: { userId, ...(status !== "all" ? { status: POST_STATUS[status] } : {}) },
         orderBy: { updatedAt: "desc" },
         take: limit,
-        include: { postTargets: true },
+        include: { postTargets: { include: { socialAccount: { select: { platform: true, username: true, label: true } } } } },
       });
       return ok(
         posts.map((p) => ({
@@ -308,6 +318,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
           caption: p.caption.slice(0, 120),
           targets: p.postTargets.map((t) => ({
             platform: t.platform,
+            account: accountDisplayName(t.socialAccount),
             content_type: t.contentType,
             status: t.status,
             published_at: fmt(t.publishedAt),
@@ -417,6 +428,7 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         })),
         targets: post.postTargets.map((t) => ({
           platform: t.platform,
+          account: accountDisplayName(t.socialAccount),
           content_type: t.contentType,
           mode:
             t.publishMode === "TIKTOK_DRAFT"
@@ -570,6 +582,14 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
             "Moment du dépôt du brouillon TikTok : scheduled (défaut) = à l'heure programmée du post ; now = dès la programmation. Absent en modification = inchangé"
           ),
         youtube: z.boolean().default(false).describe("YouTube Short (exactement 1 vidéo)"),
+        account: z
+          .string()
+          .min(1)
+          .max(80)
+          .nullish()
+          .describe(
+            "Compte à utiliser sur CHAQUE plateforme cochée quand plusieurs sont connectés : nom donné dans Connexions (ex. « Clips ») ou @pseudo (voir get_overview). Absent = le compte déjà choisi sur ce brouillon, sinon le compte principal ; null = le compte principal."
+          ),
         facebook: z
           .boolean()
           .default(false)
@@ -639,9 +659,20 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         instagramCoverMediaId: args.instagram_cover_media_id,
         youtubeThumbnailMediaId: args.youtube_thumbnail_media_id,
         youtubePrivacy: args.youtube_visibility,
+        accountRef: args.account,
       });
       if (result.error || !result.postId) return fail(result.error ?? "Enregistrement impossible.");
-      return ok({ post_id: result.postId, status: "DRAFT", next: "schedule_post ou publish_post_now" });
+      // Compte retenu pour chaque plateforme (§44) : à rappeler à l'utilisateur avant de programmer.
+      const savedTargets = await db.postTarget.findMany({
+        where: { postId: result.postId },
+        select: { platform: true, socialAccount: { select: { platform: true, username: true, label: true } } },
+      });
+      return ok({
+        post_id: result.postId,
+        status: "DRAFT",
+        targets: savedTargets.map((t) => ({ platform: t.platform, account: accountDisplayName(t.socialAccount) })),
+        next: "schedule_post ou publish_post_now",
+      });
     }
   );
 
@@ -712,11 +743,14 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       title: "Lister les vidéos de la chaîne YouTube",
       description:
         "Dernières vidéos de la chaîne YouTube connectée, de la plus récente à la plus ancienne (publiques, non répertoriées, privées et programmées ; publiées par Social Master ou non) : identifiant, titre, visibilité, date, durée, post Social Master éventuel. Pour retrouver la vidéo à modifier avec update_youtube_video. 3 unités de quota YouTube.",
-      inputSchema: { limit: z.number().int().min(1).max(50).default(15) },
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).default(15),
+        account: z.string().min(1).max(80).optional().describe("Chaîne à lister si plusieurs sont connectées (nom donné ou @pseudo) ; absent = la chaîne principale"),
+      },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ limit }) => {
-      const result = await listYouTubeVideosForUser(userId, limit);
+    async ({ limit, account }) => {
+      const result = await listYouTubeVideosForUser(userId, limit, account);
       if (result.error || !result.videos) return fail(result.error ?? "Lecture impossible.");
       return ok({
         channel: result.channel,
@@ -868,20 +902,24 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
         sort: z.enum(["recent", "views"]).default("recent"),
         history: z.boolean().default(false),
         media: z.string().min(1).optional(),
+        account: z.string().min(1).max(80).optional().describe("Compte Instagram si plusieurs sont connectés (nom donné ou @pseudo) ; absent = le compte principal"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ days, limit, sort, history, media }) => {
+    async ({ days, limit, sort, history, media, account }) => {
       if (history && !media) return fail("history n'est disponible que pour un seul média : préciser media (identifiant, post_id ou lien).");
       let mediaId: string | undefined;
+      // Compte Instagram du média désigné (plusieurs comptes possibles, §44) : on lit ses statistiques là.
+      let mediaAccountId: string | undefined;
       if (media) {
         const target = await db.postTarget.findFirst({
           where: { postId: media, platform: "INSTAGRAM", post: { userId } },
-          select: { platformPostId: true },
+          select: { platformPostId: true, socialAccountId: true },
         });
         if (target) {
           if (!target.platformPostId) return fail("Ce post n'est pas encore publié sur Instagram.");
           mediaId = target.platformPostId;
+          mediaAccountId = target.socialAccountId;
         } else if (media.startsWith("http")) {
           // Lien collé depuis l'app (/reel/…, /p/…, avec ou sans pseudo ni ?igsh=) : on compare le code court.
           const shortcode = media.match(/\/(?:reels?|p|tv)\/([A-Za-z0-9_-]+)/)?.[1];
@@ -891,20 +929,30 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
                   OR: [{ permalink: { contains: `/${shortcode}/` } }, { permalink: { endsWith: `/${shortcode}` } }],
                   socialAccount: { userId },
                 },
-                select: { mediaId: true },
+                select: { mediaId: true, socialAccountId: true },
               })
             : null;
           if (!found) return fail("Lien inconnu : ce média n'a pas encore été relevé (ou n'appartient pas au compte connecté).");
           mediaId = found.mediaId;
+          mediaAccountId = found.socialAccountId;
         } else {
           mediaId = media;
         }
       }
-      const stats = await getInstagramStatsForUser(userId, { days, limit, sort, history, mediaId });
+      const stats = await getInstagramStatsForUser(userId, {
+        days,
+        limit,
+        sort,
+        history,
+        mediaId,
+        accountId: mediaAccountId,
+        accountRef: mediaAccountId ? undefined : account,
+      });
+      if (stats.error) return fail(stats.error);
       if (!stats.account) return fail("Aucun compte Instagram connecté.");
       const state = stats.account.state;
       return ok({
-        account: `@${stats.account.username}`,
+        account: stats.account.name,
         stats_permission: stats.account.scope,
         ...(stats.account.scope === "missing" ? { action_required: RECONNECT_FOR_STATS_MESSAGE } : {}),
         last_collection: stats.account.collecting
@@ -946,15 +994,20 @@ export async function buildMcpServer(userId: string): Promise<McpServer> {
       title: "Relever les statistiques Instagram maintenant",
       description:
         "Lance tout de suite un relevé des statistiques Instagram (sinon automatique toutes les 6 h). Résultat dans 1 à 3 minutes avec get_instagram_stats (premier relevé : jusqu'à plusieurs minutes, tout l'historique du compte). N'écrit rien chez Instagram.",
-      inputSchema: {},
+      inputSchema: {
+        account: z.string().min(1).max(80).optional().describe("Compte Instagram si plusieurs sont connectés (nom donné ou @pseudo) ; absent = le compte principal"),
+      },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async () => {
-      const account = await db.socialAccount.findFirst({
+    async ({ account: accountRef }) => {
+      const igAccounts = await db.socialAccount.findMany({
         where: { userId, platform: "INSTAGRAM" },
-        select: { id: true, status: true, grantedScopes: true },
+        select: { id: true, platform: true, username: true, label: true, createdAt: true, status: true, grantedScopes: true },
       });
-      if (!account) return fail("Aucun compte Instagram connecté.");
+      const account = accountRef ? matchAccountRef(igAccounts, "INSTAGRAM", accountRef) : accountsOf(igAccounts, "INSTAGRAM")[0];
+      if (!account) {
+        return fail(accountRef ? `Aucun compte ${platformName("INSTAGRAM")} « ${accountRef} ».` : "Aucun compte Instagram connecté.");
+      }
       if (account.status !== "ACTIVE") return fail("Le compte Instagram doit être reconnecté (Connexions → Instagram → Reconnecter).");
       if (insightsScopeStatus(account.grantedScopes) === "missing") return fail(RECONNECT_FOR_STATS_MESSAGE);
       const queued = await requestInstagramStats(account.id);

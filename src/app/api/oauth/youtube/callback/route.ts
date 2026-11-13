@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    return redirectToConnections(req, "connected");
+    return redirectToConnections(req, "connected", `Chaîne YouTube « ${channel.title} » connectée.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erreur inconnue";
     await db.activityLog.create({

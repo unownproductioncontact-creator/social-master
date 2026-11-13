@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { verifySession } from "@/lib/dal";
 import { db } from "@/lib/db";
 import { checkSocialAccountHealth } from "@/lib/social-account-health";
+import { cleanAccountLabel } from "@/lib/social-accounts";
 
 export async function verifySocialAccount(accountId: string): Promise<void> {
   const session = await verifySession();
@@ -42,4 +43,20 @@ export async function disconnectSocialAccount(accountId: string): Promise<{ erro
 
   revalidatePath("/connections");
   return {};
+}
+
+/**
+ * Donne un nom à un compte (« Principal », « Clips »…) quand plusieurs comptes d'un même réseau sont
+ * connectés (CLAUDE.md §44). Vide = retirer le nom (on affiche alors @pseudo). Utilisée par un formulaire.
+ */
+export async function renameSocialAccount(accountId: string, formData: FormData): Promise<void> {
+  const session = await verifySession();
+  const account = await db.socialAccount.findUnique({ where: { id: accountId } });
+  if (!account || account.userId !== session.userId) return;
+  await db.socialAccount.update({
+    where: { id: accountId },
+    data: { label: cleanAccountLabel(String(formData.get("label") ?? "")) },
+  });
+  revalidatePath("/connections");
+  revalidatePath("/composer");
 }

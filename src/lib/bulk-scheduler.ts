@@ -1,4 +1,5 @@
 import "server-only";
+import { principalAccount } from "@/lib/social-accounts";
 import type { Platform } from "@/generated/prisma/client";
 import { formatInTimeZone } from "date-fns-tz";
 import { db } from "@/lib/db";
@@ -235,8 +236,14 @@ async function precheckTikTokWindow(
 
   const minNew = Math.min(...newTimes);
   const maxNew = Math.max(...newTimes);
+  // Le plafond de 5 brouillons / 24 h est PAR compte TikTok : on compte celui que vise le lot, le principal (§44).
+  const tiktokAccount = await db.socialAccount.findFirst({
+    where: { userId, platform: "TIKTOK" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+  });
   const existing = await getTikTokDraftEventTimes(
-    { userId },
+    tiktokAccount ? { socialAccountId: tiktokAccount.id } : { userId },
     new Date(minNew - windowMs),
     new Date(maxNew + windowMs)
   );
@@ -325,10 +332,12 @@ async function validateItem(
     return { ok: false, error: "YouTube Shorts : sélectionnez une seule vidéo." };
   }
 
+  // Publication en masse = comptes PRINCIPAUX (le plus ancien de chaque réseau, §44) ; un autre compte
+  // (chaîne de clips…) se choisit post par post dans le composer ou avec Claude.
   const accounts = await db.socialAccount.findMany({ where: { userId } });
-  const instagramAccount = accounts.find((a) => a.platform === "INSTAGRAM");
-  const tiktokAccount = accounts.find((a) => a.platform === "TIKTOK");
-  const youtubeAccount = accounts.find((a) => a.platform === "YOUTUBE");
+  const instagramAccount = principalAccount(accounts, "INSTAGRAM");
+  const tiktokAccount = principalAccount(accounts, "TIKTOK");
+  const youtubeAccount = principalAccount(accounts, "YOUTUBE");
   if (item.platforms.instagram && !instagramAccount) {
     return { ok: false, error: "Connectez d'abord votre compte Instagram." };
   }
@@ -494,6 +503,7 @@ export async function scheduleManyPosts(
   if (igTargetsInBatch > 0) {
     const igAccount = await db.socialAccount.findFirst({
       where: { userId, platform: "INSTAGRAM" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }], // compte principal (§44)
     });
     if (igAccount) {
       const snapshot = await getInstagramQuotaSnapshot(igAccount.id);
